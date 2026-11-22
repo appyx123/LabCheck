@@ -1,0 +1,45 @@
+{
+  "name": "labcheck",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "LabCheck — Sistem Pencatatan & Rekapitulasi Tugas Praktikum Mobile-First PWA + ICLabs Sync",
+  "scripts": {
+    "dev": "concurrently -k -n api,web -c cyan,green \"npm run dev:api\" \"npm run dev:web\"",
+    "dev:api": "tsx watch server/dev.ts",
+    "dev:web": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "db:push": "drizzle-kit push",
+    "db:generate": "drizzle-kit generate",
+    "test": "node --test rekap-peserta.test.mjs && vitest run",
+    "rekap:cli": "node rekap-peserta.mjs"
+  },
+  "dependencies": {
+    "@hono/zod-validator": "^0.4.3",
+    "@libsql/client": "^0.14.0",
+    "drizzle-orm": "^0.38.4",
+    "hono": "^4.6.20",
+    "lucide-react": "^0.474.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "xlsx": "^0.18.5",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250124.0",
+    "@hono/node-server": "^1.13.7",
+    "@tailwindcss/vite": "^4.0.0",
+    "@types/node": "^22.10.7",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.1.2",
+    "drizzle-kit": "^0.30.1",
+    "tailwindcss": "^4.0.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "vite": "^6.0.11",
+    "vitest": "^3.0.4"
+  }
+}

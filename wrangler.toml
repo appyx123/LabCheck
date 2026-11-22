@@ -1,0 +1,6 @@
+name = "labcheck"
+compatibility_date = "2025-01-15"
+pages_build_output_dir = "dist"
+
+[vars]
+ICLABS_BASE_URL = "https://iclabs.fikom.umi.ac.id/api/v1"

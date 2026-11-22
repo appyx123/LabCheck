@@ -1,0 +1,10 @@
+.env
+.dev.vars
+hasil/
+node_modules/
+dist/
+.wrangler/
+local.db
+local.db-shm
+local.db-wal
+*.db
