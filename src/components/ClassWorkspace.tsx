@@ -127,13 +127,26 @@ export function ClassWorkspace({
     }
   }, [tab, classId]);
 
+  const seatNumberById = useMemo(() => {
+    const map = new Map<string, number>();
+    students.forEach((s, idx) => {
+      map.set(s.id, idx + 1);
+    });
+    return map;
+  }, [students]);
+
   const filteredStudents = useMemo(() => {
     const q = studentQuery.trim().toLowerCase();
     if (!q) return students;
-    return students.filter(
-      (s) => s.nim.toLowerCase().includes(q) || s.name.toLowerCase().includes(q)
-    );
-  }, [students, studentQuery]);
+    return students.filter((s) => {
+      const seatNo = String(seatNumberById.get(s.id) ?? '');
+      return (
+        seatNo === q ||
+        s.nim.toLowerCase().includes(q) ||
+        s.name.toLowerCase().includes(q)
+      );
+    });
+  }, [students, studentQuery, seatNumberById]);
 
   function openCreateMod() {
     setEditingMod(null);
@@ -637,7 +650,7 @@ export function ClassWorkspace({
                     type="text"
                     value={studentQuery}
                     onChange={(e) => setStudentQuery(e.target.value)}
-                    placeholder="Cari NIM atau nama praktikan..."
+                    placeholder="Cari no. meja, NIM, atau nama praktikan..."
                     className="w-full min-h-[44px] pl-10 pr-11 rounded-xl border border-slate-200/90 bg-white text-base text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10 transition shadow-2xs"
                   />
                   {studentQuery && (
@@ -677,14 +690,19 @@ export function ClassWorkspace({
                   </div>
                 ) : (
                   <div className="surface-card rounded-2xl divide-y divide-slate-100 overflow-hidden">
-                    {filteredStudents.map((st, idx) => (
+                    {filteredStudents.map((st, idx) => {
+                      const seatNo = seatNumberById.get(st.id) ?? idx + 1;
+                      return (
                       <div
                         key={st.id}
                         className="px-4 py-3 flex items-center justify-between gap-3 hover:bg-slate-50/70 transition"
                       >
                         <div className="min-w-0 flex items-center gap-3">
-                          <span className="w-7 h-7 rounded-lg bg-slate-100 text-slate-500 text-xs font-mono font-medium inline-flex items-center justify-center shrink-0 tabular-nums">
-                            {idx + 1}
+                          <span
+                            title={`Nomor meja ${seatNo}`}
+                            className="min-w-[28px] h-7 px-1.5 rounded-lg bg-slate-100 text-slate-600 text-xs font-mono font-semibold inline-flex items-center justify-center shrink-0 tabular-nums"
+                          >
+                            {seatNo}
                           </span>
                           <div className="min-w-0">
                             <p className="font-semibold text-sm text-slate-900 truncate">
@@ -722,7 +740,8 @@ export function ClassWorkspace({
                           </button>
                         </div>
                       </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </div>
@@ -844,18 +863,26 @@ export function ClassWorkspace({
                       <>
                         {/* Mobile List */}
                         <div className="surface-card rounded-2xl divide-y divide-slate-100 md:hidden no-print overflow-hidden">
-                          {recap.students.map((st) => {
+                          {recap.students.map((st, idx) => {
                             const isFull = st.finalScore >= 100;
                             return (
                               <div key={st.studentId} className="p-4">
                                 <div className="flex items-start justify-between gap-2">
-                                  <div className="min-w-0">
-                                    <p className="font-semibold text-sm text-slate-900 truncate">
-                                      {st.name}
-                                    </p>
-                                    <p className="text-xs font-mono text-slate-500 tabular-nums mt-0.5">
-                                      {st.nim}
-                                    </p>
+                                  <div className="flex items-start gap-2.5 min-w-0">
+                                    <span
+                                      title={`Nomor meja ${idx + 1}`}
+                                      className="min-w-[28px] h-7 px-1.5 rounded-lg bg-slate-100 text-slate-600 text-xs font-mono font-semibold inline-flex items-center justify-center shrink-0 tabular-nums mt-0.5"
+                                    >
+                                      {idx + 1}
+                                    </span>
+                                    <div className="min-w-0">
+                                      <p className="font-semibold text-sm text-slate-900 truncate">
+                                        {st.name}
+                                      </p>
+                                      <p className="text-xs font-mono text-slate-500 tabular-nums mt-0.5">
+                                        {st.nim}
+                                      </p>
+                                    </div>
                                   </div>
                                   <span
                                     className={`px-2.5 py-0.5 rounded-lg text-sm font-bold tabular-nums shrink-0 ${

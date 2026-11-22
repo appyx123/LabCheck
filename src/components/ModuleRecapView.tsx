@@ -245,15 +245,23 @@ export function ModuleRecapView({
 
         {/* Mobile List */}
         <div className="surface-card rounded-2xl divide-y divide-slate-100 md:hidden no-print overflow-hidden">
-          {recap.students.map((st) => {
+          {recap.students.map((st, idx) => {
             const doneSet = new Set(st.completedTasks);
             const isFull = st.score >= 100;
             return (
               <div key={st.studentId} className="p-4">
                 <div className="flex items-start justify-between gap-2">
-                  <div className="min-w-0">
-                    <p className="font-semibold text-sm text-slate-900 truncate">{st.name}</p>
-                    <p className="text-xs font-mono text-slate-500 tabular-nums mt-0.5">{st.nim}</p>
+                  <div className="flex items-start gap-2.5 min-w-0">
+                    <span
+                      title={`Nomor meja ${idx + 1}`}
+                      className="min-w-[28px] h-7 px-1.5 rounded-lg bg-slate-100 text-slate-600 text-xs font-mono font-semibold inline-flex items-center justify-center shrink-0 tabular-nums mt-0.5"
+                    >
+                      {idx + 1}
+                    </span>
+                    <div className="min-w-0">
+                      <p className="font-semibold text-sm text-slate-900 truncate">{st.name}</p>
+                      <p className="text-xs font-mono text-slate-500 tabular-nums mt-0.5">{st.nim}</p>
+                    </div>
                   </div>
                   <span
                     className={`px-2.5 py-0.5 rounded-lg text-sm font-bold tabular-nums shrink-0 ${

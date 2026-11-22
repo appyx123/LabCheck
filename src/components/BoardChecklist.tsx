@@ -219,6 +219,15 @@ export function BoardChecklist({
     };
   }, [board, completions]);
 
+  const seatNumberById = useMemo(() => {
+    const map = new Map<string, number>();
+    if (!board) return map;
+    board.students.forEach((st, idx) => {
+      map.set(st.id, idx + 1);
+    });
+    return map;
+  }, [board]);
+
   const visibleStudents = useMemo(() => {
     if (!board) return [];
     const q = query.trim().toLowerCase();
@@ -227,12 +236,18 @@ export function BoardChecklist({
       const isFull = done >= board.module.taskCount;
       if (filter === 'complete' && !isFull) return false;
       if (filter === 'incomplete' && isFull) return false;
-      if (q && !st.nim.toLowerCase().includes(q) && !st.name.toLowerCase().includes(q)) {
+      const seatNo = String(seatNumberById.get(st.id) ?? '');
+      if (
+        q &&
+        seatNo !== q &&
+        !st.nim.toLowerCase().includes(q) &&
+        !st.name.toLowerCase().includes(q)
+      ) {
         return false;
       }
       return true;
     });
-  }, [board, completions, filter, query]);
+  }, [board, completions, filter, query, seatNumberById]);
 
   if (loading) {
     return (
@@ -396,7 +411,7 @@ export function BoardChecklist({
                 type="text"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder="Cari NIM atau nama praktikan..."
+                placeholder="Cari no. meja, NIM, atau nama praktikan..."
                 className="w-full min-h-[44px] pl-10 pr-11 rounded-xl border border-slate-200/90 bg-slate-50/70 focus:bg-white text-base text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10 transition"
               />
               {query ? (
@@ -512,7 +527,8 @@ export function BoardChecklist({
           <>
             {/* MOBILE (1-col) & TABLET (2-col) */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5 lg:hidden">
-              {visibleStudents.map((st) => {
+              {visibleStudents.map((st, idx) => {
+                const seatNo = seatNumberById.get(st.id) ?? idx + 1;
                 const doneSet = completions[st.id] || new Set<number>();
                 const score = calcScore(doneSet.size, board.module.taskCount);
                 const isAllDone = doneSet.size >= board.module.taskCount;
@@ -531,13 +547,26 @@ export function BoardChecklist({
                     }`}
                   >
                     <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <h3 className="font-semibold text-[15px] text-slate-900 leading-snug truncate">
-                          {st.name}
-                        </h3>
-                        <p className="text-xs font-mono text-slate-500 tabular-nums mt-0.5">
-                          {st.nim}
-                        </p>
+                      <div className="flex items-start gap-2.5 min-w-0">
+                        <span
+                          title={`Nomor meja ${seatNo}`}
+                          aria-label={`Nomor meja ${seatNo}`}
+                          className={`min-w-[32px] h-8 px-1.5 rounded-xl text-xs font-mono font-bold inline-flex items-center justify-center shrink-0 tabular-nums mt-0.5 ${
+                            isAllDone
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : 'bg-slate-100 text-slate-700'
+                          }`}
+                        >
+                          {seatNo}
+                        </span>
+                        <div className="min-w-0">
+                          <h3 className="font-semibold text-[15px] text-slate-900 leading-snug truncate">
+                            {st.name}
+                          </h3>
+                          <p className="text-xs font-mono text-slate-500 tabular-nums mt-0.5">
+                            {st.nim}
+                          </p>
+                        </div>
                       </div>
                       <span
                         className={`px-2.5 py-1 rounded-xl text-base font-bold tabular-nums leading-none shrink-0 inline-flex items-center gap-1 ${
@@ -623,7 +652,9 @@ export function BoardChecklist({
                 <table className="w-full text-sm border-collapse">
                   <thead>
                     <tr className="bg-slate-50/90 border-b border-slate-200/80 text-left text-xs font-semibold text-slate-500">
-                      <th className="py-3 px-4 w-11">#</th>
+                      <th className="py-3 px-4 w-12" title="Nomor Meja">
+                        No
+                      </th>
                       <th className="py-3 px-3 w-36">NIM</th>
                       <th className="py-3 px-3 min-w-[200px]">Nama Praktikan</th>
                       {taskNumbers.map((num) => (
@@ -637,6 +668,7 @@ export function BoardChecklist({
                   </thead>
                   <tbody className="divide-y divide-slate-100 tabular-nums">
                     {visibleStudents.map((st, idx) => {
+                      const seatNo = seatNumberById.get(st.id) ?? idx + 1;
                       const doneSet = completions[st.id] || new Set<number>();
                       const score = calcScore(doneSet.size, board.module.taskCount);
                       const isAllDone = doneSet.size >= board.module.taskCount;
@@ -650,7 +682,12 @@ export function BoardChecklist({
                               : 'hover:bg-slate-50/80'
                           }`}
                         >
-                          <td className="py-2.5 px-4 text-slate-400 text-xs">{idx + 1}</td>
+                          <td
+                            className="py-2.5 px-4 font-mono font-semibold text-slate-600 text-xs"
+                            title={`Nomor meja ${seatNo}`}
+                          >
+                            {seatNo}
+                          </td>
                           <td className="py-2.5 px-3 font-mono text-xs text-slate-500">
                             {st.nim}
                           </td>
