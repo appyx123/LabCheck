@@ -328,4 +328,56 @@ describe('LabCheck Full API (Auth, Isolation, Manual + ICLabs Sync, Board, Recap
     expect(clsRecap.students.find((s: { nim: string }) => s.nim === '002').finalScore).toBe(13);
     expect(clsRecap.summary.classAverage).toBe(44);
   });
+
+  it('handles large bulk student insert (>80) and batch update (>50) cleanly', async () => {
+    const u = await registerUser('Asisten Bulk', 'bulk@lab.ac.id');
+    const clsRes = await app.request('/api/classes', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: u.cookie },
+      body: JSON.stringify({ title: 'Algoritma — Kelas Besar' }),
+    });
+    const classId = (await clsRes.json()).class.id;
+
+    // Insert 120 students (crosses 80-row insert chunk boundary)
+    const initialBatch = Array.from({ length: 120 }, (_, i) => ({
+      nim: `1302024${String(i + 1).padStart(4, '0')}`,
+      name: `Mahasiswa ${i + 1}`,
+      status: 'AKTIF',
+    }));
+    const imp1 = await app.request(`/api/classes/${classId}/students/import`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: u.cookie },
+      body: JSON.stringify({ students: initialBatch }),
+    });
+    expect(imp1.status).toBe(200);
+    expect(await imp1.json()).toEqual({ inserted: 120, updated: 0, total: 120 });
+
+    // Update 60 existing students (crosses 50-statement batch boundary) + insert 10 new
+    const secondBatch = [
+      ...Array.from({ length: 60 }, (_, i) => ({
+        nim: `1302024${String(i + 1).padStart(4, '0')}`,
+        name: `Mahasiswa Baru ${i + 1}`,
+        status: 'AKTIF',
+      })),
+      ...Array.from({ length: 10 }, (_, i) => ({
+        nim: `1302024${String(121 + i).padStart(4, '0')}`,
+        name: `Mahasiswa ${121 + i}`,
+        status: 'AKTIF',
+      })),
+    ];
+    const imp2 = await app.request(`/api/classes/${classId}/students/import`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: u.cookie },
+      body: JSON.stringify({ students: secondBatch }),
+    });
+    expect(imp2.status).toBe(200);
+    expect(await imp2.json()).toEqual({ inserted: 10, updated: 60, total: 70 });
+
+    const listRes = await app.request(`/api/classes/${classId}/students`, {
+      headers: { Cookie: u.cookie },
+    });
+    const listData = await listRes.json();
+    expect(listData.students).toHaveLength(130);
+    expect(listData.students[0].name).toBe('Mahasiswa Baru 1');
+  });
 });

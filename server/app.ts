@@ -145,10 +145,14 @@ const iclabsSyncSchema = z
     message: 'Sertakan sesi ICLabs atau kredensial identitas & password ICLabs',
   });
 
+const INSERT_CHUNK_SIZE = 80;
+const UPDATE_BATCH_SIZE = 50;
+
 async function upsertStudentsBatch(
   db: AppDb,
   classId: string,
-  incoming: Array<{ nim: string; name: string; status?: string }>
+  incoming: Array<{ nim: string; name: string; status?: string }>,
+  options: { skipExistingLookup?: boolean } = {}
 ): Promise<{ inserted: number; updated: number; total: number }> {
   // Deduplicate incoming by trimmed NIM (last occurrence wins)
   const deduped = new Map<string, { nim: string; name: string; status: string }>();
@@ -163,29 +167,38 @@ async function upsertStudentsBatch(
     });
   }
 
-  const existingRows = await db
-    .select({ id: students.id, nim: students.nim, name: students.name, status: students.status })
-    .from(students)
-    .where(eq(students.classId, classId));
+  if (deduped.size === 0) {
+    return { inserted: 0, updated: 0, total: 0 };
+  }
+
+  const existingRows = options.skipExistingLookup
+    ? []
+    : await db
+        .select({ id: students.id, nim: students.nim, name: students.name, status: students.status })
+        .from(students)
+        .where(eq(students.classId, classId));
 
   const existingByNim = new Map(existingRows.map((r) => [r.nim, r]));
 
-  let inserted = 0;
-  let updated = 0;
   const now = new Date();
+  const toInsert: Array<{
+    id: string;
+    classId: string;
+    nim: string;
+    name: string;
+    status: string;
+    createdAt: Date;
+  }> = [];
+  const toUpdate: Array<{ id: string; name: string; status: string }> = [];
 
   for (const row of deduped.values()) {
     const existing = existingByNim.get(row.nim);
     if (existing) {
       if (existing.name !== row.name || existing.status !== row.status) {
-        await db
-          .update(students)
-          .set({ name: row.name, status: row.status })
-          .where(eq(students.id, existing.id));
-        updated += 1;
+        toUpdate.push({ id: existing.id, name: row.name, status: row.status });
       }
     } else {
-      await db.insert(students).values({
+      toInsert.push({
         id: newId(),
         classId,
         nim: row.nim,
@@ -193,19 +206,50 @@ async function upsertStudentsBatch(
         status: row.status,
         createdAt: now,
       });
-      inserted += 1;
     }
   }
 
-  return { inserted, updated, total: deduped.size };
+  // Multi-row bulk insert per chunk -> 1 subrequest per 80 rows (Cloudflare Workers 50-subrequest friendly)
+  for (let i = 0; i < toInsert.length; i += INSERT_CHUNK_SIZE) {
+    const chunk = toInsert.slice(i, i + INSERT_CHUNK_SIZE);
+    await db.insert(students).values(chunk);
+  }
+
+  // Pipelined batch updates -> 1 subrequest per 50 updates
+  for (let i = 0; i < toUpdate.length; i += UPDATE_BATCH_SIZE) {
+    const chunk = toUpdate.slice(i, i + UPDATE_BATCH_SIZE);
+    const queries = chunk.map((u) =>
+      db
+        .update(students)
+        .set({ name: u.name, status: u.status })
+        .where(eq(students.id, u.id))
+    );
+    if (queries.length > 0) {
+      await db.batch(queries as [(typeof queries)[0], ...(typeof queries)]);
+    }
+  }
+
+  return { inserted: toInsert.length, updated: toUpdate.length, total: deduped.size };
 }
 
 export function createApp(options: CreateAppOptions = {}) {
   const app = new Hono<{ Bindings: AppBindings; Variables: AppVariables }>();
 
+  app.onError((err, c) => {
+    console.error('[LabCheck API Error]', err);
+    const detail = err instanceof Error ? err.message : 'Unexpected server error';
+    return c.json({ error: `Kesalahan server: ${detail}` }, 500);
+  });
+
   // Attach DB per request
   app.use('/api/*', async (c, next) => {
     const env = c.env || {};
+    if (!options.dbFactory && !env.TURSO_DATABASE_URL) {
+      return c.json(
+        { error: 'Konfigurasi TURSO_DATABASE_URL belum diatur di environment server.' },
+        500
+      );
+    }
     const db = options.dbFactory
       ? options.dbFactory(env)
       : createWebDb(env.TURSO_DATABASE_URL || '', env.TURSO_AUTH_TOKEN);
@@ -551,7 +595,9 @@ export function createApp(options: CreateAppOptions = {}) {
         const status = err.status === 401 || err.status === 422 ? err.status : 502;
         return c.json({ error: err.message }, status as 401 | 422 | 502);
       }
-      return c.json({ error: 'Gagal menghubungi server ICLabs.' }, 502);
+      console.error('[iclabs/preview] unexpected error:', err);
+      const detail = err instanceof Error ? err.message : 'kesalahan internal';
+      return c.json({ error: `Gagal memuat daftar kelas ICLabs: ${detail}` }, 500);
     }
   });
 
@@ -582,6 +628,16 @@ export function createApp(options: CreateAppOptions = {}) {
 
       const now = new Date();
 
+      const existingClassesRows = await db
+        .select()
+        .from(classes)
+        .where(eq(classes.userId, user.id));
+      const existingClassByExtId = new Map(
+        existingClassesRows
+          .filter((r) => Boolean(r.externalClassId))
+          .map((r) => [r.externalClassId as string, r])
+      );
+
       for (const clsInput of body.classes) {
         const participants = await iclabsGetParticipants(
           baseUrl,
@@ -590,19 +646,11 @@ export function createApp(options: CreateAppOptions = {}) {
           fetchFn
         );
 
-        const [existingClass] = await db
-          .select()
-          .from(classes)
-          .where(
-            and(
-              eq(classes.userId, user.id),
-              eq(classes.externalClassId, clsInput.externalClassId)
-            )
-          )
-          .limit(1);
+        const existingClass = existingClassByExtId.get(clsInput.externalClassId);
 
         let localClassId: string;
         let finalTitle: string;
+        let isNewClass = false;
 
         if (existingClass) {
           localClassId = existingClass.id;
@@ -618,9 +666,10 @@ export function createApp(options: CreateAppOptions = {}) {
             .where(eq(classes.id, existingClass.id));
           classesUpdated += 1;
         } else {
+          isNewClass = true;
           localClassId = newId();
           finalTitle = clsInput.title;
-          await db.insert(classes).values({
+          const newClassRow = {
             id: localClassId,
             userId: user.id,
             title: clsInput.title,
@@ -633,14 +682,17 @@ export function createApp(options: CreateAppOptions = {}) {
             groupName: clsInput.groupName || null,
             lastSyncedAt: now,
             createdAt: now,
-          });
+          };
+          await db.insert(classes).values(newClassRow);
+          existingClassByExtId.set(clsInput.externalClassId, newClassRow);
           classesCreated += 1;
         }
 
         const studentRes = await upsertStudentsBatch(
           db,
           localClassId,
-          participants.map((p) => ({ nim: p.nim, name: p.nama, status: p.status }))
+          participants.map((p) => ({ nim: p.nim, name: p.nama, status: p.status })),
+          { skipExistingLookup: isNewClass }
         );
 
         studentsInserted += studentRes.inserted;
@@ -669,7 +721,9 @@ export function createApp(options: CreateAppOptions = {}) {
         const status = err.status === 401 || err.status === 422 ? err.status : 502;
         return c.json({ error: err.message }, status as 401 | 422 | 502);
       }
-      return c.json({ error: 'Gagal melakukan sinkronisasi dengan ICLabs.' }, 502);
+      console.error('[iclabs/sync] unexpected error:', err);
+      const detail = err instanceof Error ? err.message : 'kesalahan internal';
+      return c.json({ error: `Gagal menyimpan sinkronisasi ICLabs: ${detail}` }, 500);
     }
   });
 

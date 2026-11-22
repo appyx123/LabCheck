@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Loader2 } from 'lucide-react';
+import { Check } from 'lucide-react';
 import { api } from './lib/api';
 import type { User } from './types';
 import { AuthView } from './components/AuthView';
@@ -59,8 +59,11 @@ export function App() {
 
   if (authLoading) {
     return (
-      <div className="min-h-dvh flex items-center justify-center bg-[#fafafa]">
-        <Loader2 className="w-5 h-5 animate-spin text-neutral-400" />
+      <div className="min-h-dvh flex flex-col items-center justify-center bg-[#F6F7F9] gap-3">
+        <div className="w-11 h-11 rounded-2xl bg-gradient-to-br from-slate-900 to-indigo-900 text-white inline-flex items-center justify-center shadow-lg shadow-indigo-950/15 animate-pulse">
+          <Check className="w-5 h-5 stroke-[2.75]" />
+        </div>
+        <p className="text-xs font-medium text-slate-400 tracking-wide">Memuat LabCheck...</p>
       </div>
     );
   }
