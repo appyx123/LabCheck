@@ -141,12 +141,18 @@ export const api = {
   // Modules
   getModules: (classId: string) =>
     apiFetch<{ modules: ModuleItem[] }>(`/api/classes/${classId}/modules`),
-  createModule: (classId: string, body: { title: string; taskCount: number }) =>
+  createModule: (
+    classId: string,
+    body: { title: string; taskCount: number; moduleDate?: string | null }
+  ) =>
     apiFetch<{ module: ModuleItem }>(`/api/classes/${classId}/modules`, {
       method: 'POST',
       body: JSON.stringify(body),
     }),
-  updateModule: (id: string, body: { title?: string; taskCount?: number }) =>
+  updateModule: (
+    id: string,
+    body: { title?: string; taskCount?: number; moduleDate?: string | null }
+  ) =>
     apiFetch<{ module: ModuleItem }>(`/api/modules/${id}`, {
       method: 'PATCH',
       body: JSON.stringify(body),

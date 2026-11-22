@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import {
   ArrowLeft,
+  Calendar,
   CheckCircle2,
   CheckSquare,
   Download,
@@ -10,6 +11,7 @@ import {
   Users,
 } from 'lucide-react';
 import { api } from '../lib/api';
+import { formatModuleDate } from '../lib/date';
 import { exportModuleRecap } from '../lib/spreadsheet';
 import type { ModuleRecapData } from '../types';
 
@@ -111,8 +113,12 @@ export function ModuleRecapView({
         <div className="hidden print-only mb-4 pb-3 border-b border-slate-800">
           <h1 className="text-base font-bold">REKAP MODUL — {recap.module.title}</h1>
           <p className="text-xs text-slate-600 mt-1">
-            Kelas: {recap.class.title} · Asisten: {recap.assistantName} · {recap.module.taskCount}{' '}
-            Tugas (@{recap.module.pointsPerTask}) · Rata-rata: {recap.summary.averageScore} ·{' '}
+            Kelas: {recap.class.title}
+            {recap.module.moduleDate
+              ? ` · Tanggal: ${formatModuleDate(recap.module.moduleDate, 'long')}`
+              : ''}{' '}
+            · Asisten: {recap.assistantName} · {recap.module.taskCount} Tugas (@
+            {recap.module.pointsPerTask}) · Rata-rata: {recap.summary.averageScore} ·{' '}
             {new Date(recap.generatedAt).toLocaleDateString('id-ID', {
               day: '2-digit',
               month: 'long',
@@ -123,10 +129,16 @@ export function ModuleRecapView({
 
         {/* Actions Bar */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 no-print">
-          <div className="flex items-center gap-2 text-xs text-slate-500 tabular-nums">
+          <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 tabular-nums">
             <span className="px-2.5 py-1 rounded-lg bg-white border border-slate-200/80 font-medium text-slate-700">
               {recap.module.taskCount} tugas
             </span>
+            {recap.module.moduleDate && (
+              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-indigo-50/70 border border-indigo-200/70 font-medium text-indigo-700">
+                <Calendar className="w-3.5 h-3.5 shrink-0" />
+                {formatModuleDate(recap.module.moduleDate, 'long')}
+              </span>
+            )}
             <span>Bobot @{recap.module.pointsPerTask} per soal (bulat ke atas)</span>
           </div>
           <div className="flex flex-wrap gap-2">

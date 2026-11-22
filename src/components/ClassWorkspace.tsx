@@ -3,6 +3,7 @@ import {
   AlertCircle,
   ArrowLeft,
   BarChart3,
+  Calendar,
   CheckSquare,
   CloudDownload,
   Download,
@@ -23,6 +24,7 @@ import {
   X,
 } from 'lucide-react';
 import { api } from '../lib/api';
+import { formatModuleDate, getTodayDateInput } from '../lib/date';
 import {
   exportClassRecap,
   parseStudentsFile,
@@ -63,6 +65,7 @@ export function ClassWorkspace({
   const [modModalOpen, setModModalOpen] = useState(false);
   const [editingMod, setEditingMod] = useState<ModuleItem | null>(null);
   const [modTitle, setModTitle] = useState('');
+  const [modDate, setModDate] = useState('');
   const [modTaskCount, setModTaskCount] = useState(4);
   const [modShrinkConfirm, setModShrinkConfirm] = useState(false);
   const [modMenuId, setModMenuId] = useState<string | null>(null);
@@ -135,6 +138,7 @@ export function ClassWorkspace({
   function openCreateMod() {
     setEditingMod(null);
     setModTitle('');
+    setModDate(getTodayDateInput());
     setModTaskCount(4);
     setModShrinkConfirm(false);
     setModModalOpen(true);
@@ -144,6 +148,7 @@ export function ClassWorkspace({
     setModMenuId(null);
     setEditingMod(m);
     setModTitle(m.title);
+    setModDate(m.moduleDate || '');
     setModTaskCount(m.taskCount);
     setModShrinkConfirm(false);
     setModModalOpen(true);
@@ -164,15 +169,18 @@ export function ClassWorkspace({
     }
     setSaving(true);
     try {
+      const normalizedDate = modDate.trim() || null;
       if (editingMod) {
         await api.updateModule(editingMod.id, {
           title: modTitle.trim(),
           taskCount: modTaskCount,
+          moduleDate: normalizedDate,
         });
       } else {
         await api.createModule(classId, {
           title: modTitle.trim(),
           taskCount: modTaskCount,
+          moduleDate: normalizedDate,
         });
       }
       setModModalOpen(false);
@@ -473,8 +481,16 @@ export function ClassWorkspace({
                               onClick={() => onOpenBoard(m.id)}
                               className="text-left block w-full focus:outline-none"
                             >
-                              <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-slate-100 text-[11px] font-medium text-slate-600 tabular-nums mb-2">
-                                {m.taskCount} tugas · @{m.pointsPerTask} poin
+                              <div className="flex flex-wrap items-center gap-1.5 mb-2">
+                                <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-slate-100 text-[11px] font-medium text-slate-600 tabular-nums">
+                                  {m.taskCount} tugas · @{m.pointsPerTask} poin
+                                </span>
+                                {m.moduleDate && (
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-indigo-50/70 text-[11px] font-medium text-indigo-700 tabular-nums">
+                                    <Calendar className="w-3 h-3 shrink-0" />
+                                    {formatModuleDate(m.moduleDate)}
+                                  </span>
+                                )}
                               </div>
                               <h3 className="font-semibold text-slate-900 text-base leading-snug">
                                 {m.title}
@@ -890,7 +906,11 @@ export function ClassWorkspace({
                                   {recap.modules.map((m, idx) => (
                                     <th
                                       key={m.id}
-                                      title={m.title}
+                                      title={
+                                        m.moduleDate
+                                          ? `${m.title} (${formatModuleDate(m.moduleDate)})`
+                                          : m.title
+                                      }
                                       className="py-3 px-3 text-center"
                                     >
                                       M{idx + 1}
@@ -1003,6 +1023,18 @@ export function ClassWorkspace({
               onChange={(e) => setModTitle(e.target.value)}
               placeholder="Mis. Modul 1: Subnetting"
               className="w-full min-h-[46px] px-3.5 rounded-xl border border-slate-200 bg-slate-50/50 focus:bg-white text-base text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10 transition"
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+              Tanggal Modul <span className="text-slate-400 font-normal">(opsional)</span>
+            </label>
+            <input
+              type="date"
+              value={modDate}
+              onChange={(e) => setModDate(e.target.value)}
+              className="w-full min-h-[46px] px-3.5 rounded-xl border border-slate-200 bg-slate-50/50 focus:bg-white text-base text-slate-900 tabular-nums focus:outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10 transition"
             />
           </div>
 

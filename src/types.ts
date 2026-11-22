@@ -31,6 +31,7 @@ export interface ModuleItem {
   id: string;
   classId: string;
   title: string;
+  moduleDate?: string | null;
   taskCount: number;
   pointsPerTask: number;
   orderIndex: number;
@@ -50,6 +51,7 @@ export interface BoardData {
     id: string;
     classId: string;
     title: string;
+    moduleDate?: string | null;
     taskCount: number;
     pointsPerTask: number;
     orderIndex: number;
@@ -70,6 +72,7 @@ export interface ModuleRecapData {
   module: {
     id: string;
     title: string;
+    moduleDate?: string | null;
     taskCount: number;
     pointsPerTask: number;
   };
@@ -108,6 +111,7 @@ export interface ClassRecapData {
   modules: Array<{
     id: string;
     title: string;
+    moduleDate?: string | null;
     taskCount: number;
     pointsPerTask: number;
   }>;

@@ -239,16 +239,17 @@ describe('LabCheck Full API (Auth, Isolation, Manual + ICLabs Sync, Board, Recap
     const impData = await impRes.json();
     expect(impData.inserted).toBe(2);
 
-    // Module 1 (6 tasks) & Module 2 (4 tasks)
+    // Module 1 (6 tasks, with date) & Module 2 (4 tasks)
     const m1 = (
       await (
         await app.request(`/api/classes/${classId}/modules`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Cookie: u.cookie },
-          body: JSON.stringify({ title: 'Modul 1', taskCount: 6 }),
+          body: JSON.stringify({ title: 'Modul 1', taskCount: 6, moduleDate: '2026-11-23' }),
         })
       ).json()
     ).module;
+    expect(m1.moduleDate).toBe('2026-11-23');
 
     const m2 = (
       await (
@@ -259,6 +260,7 @@ describe('LabCheck Full API (Auth, Isolation, Manual + ICLabs Sync, Board, Recap
         })
       ).json()
     ).module;
+    expect(m2.moduleDate).toBeNull();
 
     const stuList = (
       await (
@@ -292,18 +294,20 @@ describe('LabCheck Full API (Auth, Isolation, Manual + ICLabs Sync, Board, Recap
       body: JSON.stringify({ studentId: bima.id, taskNumber: 5, completed: true }),
     });
 
-    // Shrink Modul 1 from 6 tasks to 4 tasks -> task 5 & 6 pruned!
+    // Shrink Modul 1 from 6 tasks to 4 tasks -> task 5 & 6 pruned, update moduleDate!
     const patchRes = await app.request(`/api/modules/${m1.id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json', Cookie: u.cookie },
-      body: JSON.stringify({ taskCount: 4 }),
+      body: JSON.stringify({ taskCount: 4, moduleDate: '2026-11-24' }),
     });
     expect(patchRes.status).toBe(200);
+    expect((await patchRes.json()).module.moduleDate).toBe('2026-11-24');
 
     // Module 1 recap: Alya 4/4 (100), Bima 1/4 (25) -> avg ceil(62.5) = 63
     const modRecap = await (
       await app.request(`/api/modules/${m1.id}/recap`, { headers: { Cookie: u.cookie } })
     ).json();
+    expect(modRecap.module.moduleDate).toBe('2026-11-24');
     expect(modRecap.summary.completedAllCount).toBe(1);
     expect(modRecap.summary.averageScore).toBe(63);
     expect(modRecap.students.find((s: { nim: string }) => s.nim === '002').score).toBe(25);

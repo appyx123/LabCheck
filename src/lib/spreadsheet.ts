@@ -166,8 +166,9 @@ export async function exportModuleRecap(data: ModuleRecapData, format: 'xlsx' | 
   }
 
   const XLSX = await import('xlsx');
+  const dateInfo = data.module.moduleDate ? ` | Tanggal: ${data.module.moduleDate}` : '';
   const ws = XLSX.utils.aoa_to_sheet([
-    [`Rekap Modul: ${data.module.title}`],
+    [`Rekap Modul: ${data.module.title}${dateInfo}`],
     [`Kelas: ${data.class.title} | Asisten: ${data.assistantName}`],
     [`Bobot per Tugas: ${data.module.pointsPerTask} | Rata-rata: ${data.summary.averageScore}`],
     [],

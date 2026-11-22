@@ -99,14 +99,25 @@ const importStudentsSchema = z.object({
   students: z.array(studentSchema).min(1, 'Daftar praktikan tidak boleh kosong').max(1000),
 });
 
+const moduleDateSchema = z
+  .union([
+    z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, 'Format tanggal tidak valid (YYYY-MM-DD)'),
+    z.literal(''),
+    z.null(),
+  ])
+  .optional()
+  .transform((v) => (v === undefined ? undefined : v || null));
+
 const moduleCreateSchema = z.object({
   title: z.string().trim().min(1, 'Judul modul wajib diisi').max(150),
   taskCount: z.number().int().min(1, 'Minimal 1 tugas').max(30, 'Maksimal 30 tugas'),
+  moduleDate: moduleDateSchema,
 });
 
 const moduleUpdateSchema = z.object({
   title: z.string().trim().min(1, 'Judul modul tidak boleh kosong').max(150).optional(),
   taskCount: z.number().int().min(1, 'Minimal 1 tugas').max(30, 'Maksimal 30 tugas').optional(),
+  moduleDate: moduleDateSchema,
 });
 
 const toggleSchema = z.object({
@@ -493,6 +504,7 @@ export function createApp(options: CreateAppOptions = {}) {
         id: m.id,
         classId: m.classId,
         title: m.title,
+        moduleDate: m.moduleDate ?? null,
         taskCount: m.taskCount,
         pointsPerTask: pointsPerTask(m.taskCount),
         orderIndex: m.orderIndex,
@@ -949,6 +961,7 @@ export function createApp(options: CreateAppOptions = {}) {
           id: m.id,
           classId: m.classId,
           title: m.title,
+          moduleDate: m.moduleDate ?? null,
           taskCount: m.taskCount,
           pointsPerTask: pointsPerTask(m.taskCount),
           orderIndex: m.orderIndex,
@@ -965,7 +978,7 @@ export function createApp(options: CreateAppOptions = {}) {
     const db = c.get('db');
     const user = c.get('user');
     const classId = c.req.param('id');
-    const { title, taskCount } = c.req.valid('json');
+    const { title, taskCount, moduleDate } = c.req.valid('json');
 
     const [cls] = await db
       .select({ id: classes.id })
@@ -982,11 +995,13 @@ export function createApp(options: CreateAppOptions = {}) {
     const id = newId();
     const orderIndex = Number(maxOrder) + 1;
     const createdAt = new Date();
+    const savedDate = moduleDate ?? null;
 
     await db.insert(modules).values({
       id,
       classId,
       title,
+      moduleDate: savedDate,
       taskCount,
       orderIndex,
       createdAt,
@@ -998,6 +1013,7 @@ export function createApp(options: CreateAppOptions = {}) {
           id,
           classId,
           title,
+          moduleDate: savedDate,
           taskCount,
           pointsPerTask: pointsPerTask(taskCount),
           orderIndex,
@@ -1027,10 +1043,12 @@ export function createApp(options: CreateAppOptions = {}) {
 
     const nextTitle = data.title !== undefined ? data.title : row.mod.title;
     const nextTaskCount = data.taskCount !== undefined ? data.taskCount : row.mod.taskCount;
+    const nextModuleDate =
+      data.moduleDate !== undefined ? data.moduleDate : (row.mod.moduleDate ?? null);
 
     await db
       .update(modules)
-      .set({ title: nextTitle, taskCount: nextTaskCount })
+      .set({ title: nextTitle, taskCount: nextTaskCount, moduleDate: nextModuleDate })
       .where(eq(modules.id, moduleId));
 
     // FR-MOD-03: Jika jumlah tugas diperkecil, hapus task_completions > taskCount baru
@@ -1050,6 +1068,7 @@ export function createApp(options: CreateAppOptions = {}) {
         id: row.mod.id,
         classId: row.mod.classId,
         title: nextTitle,
+        moduleDate: nextModuleDate,
         taskCount: nextTaskCount,
         pointsPerTask: pointsPerTask(nextTaskCount),
         orderIndex: row.mod.orderIndex,
@@ -1131,6 +1150,7 @@ export function createApp(options: CreateAppOptions = {}) {
         id: row.mod.id,
         classId: row.mod.classId,
         title: row.mod.title,
+        moduleDate: row.mod.moduleDate ?? null,
         taskCount: row.mod.taskCount,
         pointsPerTask: pointsPerTask(row.mod.taskCount),
         orderIndex: row.mod.orderIndex,
@@ -1349,6 +1369,7 @@ export function createApp(options: CreateAppOptions = {}) {
       module: {
         id: row.mod.id,
         title: row.mod.title,
+        moduleDate: row.mod.moduleDate ?? null,
         taskCount: row.mod.taskCount,
         pointsPerTask: pointsPerTask(row.mod.taskCount),
       },
@@ -1450,6 +1471,7 @@ export function createApp(options: CreateAppOptions = {}) {
       modules: modRows.map((m) => ({
         id: m.id,
         title: m.title,
+        moduleDate: m.moduleDate ?? null,
         taskCount: m.taskCount,
         pointsPerTask: pointsPerTask(m.taskCount),
       })),

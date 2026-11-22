@@ -45,6 +45,7 @@ const SCHEMA_STATEMENTS = [
     id TEXT PRIMARY KEY NOT NULL,
     class_id TEXT NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
     title TEXT NOT NULL,
+    module_date TEXT,
     task_count INTEGER NOT NULL,
     order_index INTEGER NOT NULL DEFAULT 1,
     created_at INTEGER NOT NULL
@@ -64,5 +65,10 @@ const SCHEMA_STATEMENTS = [
 export async function ensureSchema(client: Client): Promise<void> {
   for (const sql of SCHEMA_STATEMENTS) {
     await client.execute(sql);
+  }
+  const cols = await client.execute(`PRAGMA table_info(modules)`);
+  const hasModuleDate = cols.rows.some((r) => String(r.name ?? r[1]) === 'module_date');
+  if (!hasModuleDate) {
+    await client.execute(`ALTER TABLE modules ADD COLUMN module_date TEXT`);
   }
 }

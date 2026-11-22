@@ -11,6 +11,7 @@ import {
   X,
 } from 'lucide-react';
 import { api } from '../lib/api';
+import { formatModuleDate } from '../lib/date';
 import type { BoardData } from '../types';
 
 type FilterMode = 'all' | 'incomplete' | 'complete';
@@ -299,6 +300,7 @@ export function BoardChecklist({
               <div className="min-w-0">
                 <p className="text-[11px] font-medium text-slate-500 truncate">
                   {board.class.title}
+                  {board.module.moduleDate ? ` · ${formatModuleDate(board.module.moduleDate)}` : ''}
                 </p>
                 <div className="flex items-center gap-2 min-w-0">
                   <h1 className="font-bold text-sm sm:text-base text-slate-900 truncate leading-tight">

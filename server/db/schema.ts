@@ -56,6 +56,7 @@ export const modules = sqliteTable(
       .notNull()
       .references(() => classes.id, { onDelete: 'cascade' }),
     title: text('title').notNull(),
+    moduleDate: text('module_date'), // Format YYYY-MM-DD (opsional)
     taskCount: integer('task_count').notNull(), // Bobot tiap tugas = 100 / taskCount (1..30)
     orderIndex: integer('order_index').notNull().default(1),
     createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
