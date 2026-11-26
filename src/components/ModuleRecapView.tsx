@@ -10,10 +10,11 @@ import {
   TrendingUp,
   Users,
 } from 'lucide-react';
-import { api } from '../lib/api';
+import { api, isAbortError } from '../lib/api';
 import { formatModuleDate } from '../lib/date';
 import { exportModuleRecap } from '../lib/spreadsheet';
 import type { ModuleRecapData } from '../types';
+import { RecapSkeleton } from './PageSkeletons';
 
 interface ModuleRecapViewProps {
   moduleId: string;
@@ -31,32 +32,27 @@ export function ModuleRecapView({
   const [error, setError] = useState('');
 
   useEffect(() => {
+    const controller = new AbortController();
     setLoading(true);
     api
-      .getModuleRecap(moduleId)
+      .getModuleRecap(moduleId, controller.signal)
       .then((data) => {
+        if (controller.signal.aborted) return;
         setRecap(data);
         setError('');
       })
-      .catch((err) => setError(err instanceof Error ? err.message : 'Gagal memuat rekap modul.'))
-      .finally(() => setLoading(false));
+      .catch((err) => {
+        if (isAbortError(err)) return;
+        setError(err instanceof Error ? err.message : 'Gagal memuat rekap modul.');
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false);
+      });
+    return () => controller.abort();
   }, [moduleId]);
 
   if (loading) {
-    return (
-      <div className="min-h-dvh bg-[#F6F7F9] flex flex-col">
-        <div className="bg-white border-b border-slate-200/80 h-15" />
-        <div className="max-w-5xl w-full mx-auto px-4 py-6 space-y-4 animate-pulse">
-          <div className="grid grid-cols-3 gap-3">
-            {[1, 2, 3].map((i) => (
-              <div key={i} className="surface-card rounded-2xl h-20" />
-            ))}
-          </div>
-          <div className="surface-card rounded-2xl h-36" />
-          <div className="surface-card rounded-2xl h-64" />
-        </div>
-      </div>
-    );
+    return <RecapSkeleton />;
   }
 
   if (error || !recap) {

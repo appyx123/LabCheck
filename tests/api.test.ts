@@ -702,4 +702,106 @@ describe('LabCheck Full API (Auth, Isolation, Manual + ICLabs Sync, Board, Recap
     expect(boardRes.status).toBe(200);
     expect((await boardRes.json()).completions['s-legacy']).toEqual([1]);
   });
+
+  it('prevents duplicate ICLabs classes on concurrent sync, returns 409 on parallel NIM insert, and supports board ETag 304', async () => {
+    const u1 = await registerUser('Concurrent Satu', 'conc1@lab.ac.id');
+    const u2 = await registerUser('Concurrent Dua', 'conc2@lab.ac.id');
+
+    const syncPayload = JSON.stringify({
+      identitas: 'asisten@umi.ac.id',
+      password: 'rahasia',
+      classes: [
+        {
+          externalClassId: '101',
+          title: 'IF201 — Jaringan Komputer (A)',
+          courseCode: 'IF201',
+          groupName: 'A',
+        },
+      ],
+    });
+
+    // Fire two ICLabs syncs for the exact same externalClassId concurrently
+    const [r1, r2] = await Promise.all([
+      app.request('/api/iclabs/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: u1.cookie },
+        body: syncPayload,
+      }),
+      app.request('/api/iclabs/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: u2.cookie },
+        body: syncPayload,
+      }),
+    ]);
+
+    expect(r1.status).toBe(200);
+    expect(r2.status).toBe(200);
+    const d1 = await r1.json();
+    const d2 = await r2.json();
+    expect(d1.syncedClasses[0].id).toBe(d2.syncedClasses[0].id);
+    const classId = d1.syncedClasses[0].id;
+
+    // Parallel duplicate student creation returns one 201 and one 409 (never 500)
+    const stuPayload = JSON.stringify({ nim: '13020239999', name: 'Concurrent Student' });
+    const [s1, s2] = await Promise.all([
+      app.request(`/api/classes/${classId}/students`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: u1.cookie },
+        body: stuPayload,
+      }),
+      app.request(`/api/classes/${classId}/students`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: u2.cookie },
+        body: stuPayload,
+      }),
+    ]);
+    expect([s1.status, s2.status].sort()).toEqual([201, 409]);
+
+    // Create module & verify GET /api/classes/:id returns module stats directly
+    const modRes = await app.request(`/api/classes/${classId}/modules`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: u1.cookie },
+      body: JSON.stringify({ title: 'Modul ETag', taskCount: 4 }),
+    });
+    const modId = (await modRes.json()).module.id;
+
+    // First board fetch returns 200 + ETag + memberCount = 2
+    const b1 = await app.request(`/api/modules/${modId}/board`, {
+      headers: { Cookie: u1.cookie },
+    });
+    expect(b1.status).toBe(200);
+    const etag1 = b1.headers.get('etag');
+    expect(etag1).toBeTruthy();
+    const b1Data = await b1.json();
+    expect(b1Data.class.memberCount).toBe(2);
+
+    // Conditional fetch with matching ETag returns 304 Not Modified
+    const b304 = await app.request(`/api/modules/${modId}/board`, {
+      headers: { Cookie: u1.cookie, 'If-None-Match': etag1! },
+    });
+    expect(b304.status).toBe(304);
+
+    // Toggle task -> ETag changes -> conditional fetch with old ETag returns 200
+    const studentId = b1Data.students[0].id;
+    const toggleRes = await app.request(`/api/modules/${modId}/toggle`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: u2.cookie },
+      body: JSON.stringify({ studentId, taskNumber: 1, completed: true }),
+    });
+    expect(toggleRes.status).toBe(200);
+
+    const b2 = await app.request(`/api/modules/${modId}/board`, {
+      headers: { Cookie: u1.cookie, 'If-None-Match': etag1! },
+    });
+    expect(b2.status).toBe(200);
+    expect(b2.headers.get('etag')).not.toBe(etag1);
+    expect((await b2.json()).completions[studentId]).toEqual([1]);
+
+    // GET /api/classes/:id returns module averageScore & studentCount directly
+    const clsDetail = await (
+      await app.request(`/api/classes/${classId}`, { headers: { Cookie: u1.cookie } })
+    ).json();
+    expect(clsDetail.modules[0].studentCount).toBe(3);
+    expect(clsDetail.modules[0].averageScore).toBeGreaterThan(0);
+  });
 });

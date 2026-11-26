@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ChangeEvent, type FormEvent } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useState, type ChangeEvent, type FormEvent } from 'react';
 import {
   AlertCircle,
   ArrowLeft,
@@ -25,7 +25,7 @@ import {
   Users,
   X,
 } from 'lucide-react';
-import { api } from '../lib/api';
+import { api, isAbortError } from '../lib/api';
 import { formatModuleDate, getTodayDateInput } from '../lib/date';
 import {
   exportClassRecap,
@@ -34,7 +34,10 @@ import {
 } from '../lib/spreadsheet';
 import type { ClassItem, ClassRecapData, ModuleItem, StudentItem } from '../types';
 import { Modal } from './Modal';
-import { IclabsSyncModal } from './IclabsSyncModal';
+
+const IclabsSyncModal = lazy(() =>
+  import('./IclabsSyncModal').then((m) => ({ default: m.IclabsSyncModal }))
+);
 
 type TabKey = 'modules' | 'students' | 'recap';
 
@@ -103,42 +106,59 @@ export function ClassWorkspace({
     }
   }
 
-  async function loadAll() {
+  // Fetch class + modules (with stats) and students in 2 calls instead of 3 (no double modules query)
+  async function loadAll(signal?: AbortSignal) {
     setError('');
     try {
-      const [clsRes, modRes, stuRes] = await Promise.all([
-        api.getClass(classId),
-        api.getModules(classId),
-        api.getStudents(classId),
+      const [clsRes, stuRes] = await Promise.all([
+        api.getClass(classId, signal),
+        api.getStudents(classId, signal),
       ]);
+      if (signal?.aborted) return;
       setCls(clsRes.class);
-      setModules(modRes.modules);
+      setModules(clsRes.modules);
       setStudents(stuRes.students);
     } catch (err) {
+      if (isAbortError(err)) return;
       setError(err instanceof Error ? err.message : 'Gagal memuat data kelas.');
     } finally {
-      setLoading(false);
+      if (!signal?.aborted) setLoading(false);
     }
   }
 
-  async function loadRecap() {
+  async function refreshModulesOnly() {
+    setError('');
     try {
-      const data = await api.getClassRecap(classId);
-      setRecap(data);
+      const res = await api.getModules(classId);
+      setModules(res.modules);
     } catch (err) {
+      setError(err instanceof Error ? err.message : 'Gagal memuat modul.');
+    }
+  }
+
+  async function loadRecap(signal?: AbortSignal) {
+    try {
+      const data = await api.getClassRecap(classId, signal);
+      if (!signal?.aborted) setRecap(data);
+    } catch (err) {
+      if (isAbortError(err)) return;
       setError(err instanceof Error ? err.message : 'Gagal memuat rekap kelas.');
     }
   }
 
   useEffect(() => {
+    const controller = new AbortController();
     setLoading(true);
-    loadAll();
+    setRecap(null);
+    void loadAll(controller.signal);
+    return () => controller.abort();
   }, [classId]);
 
   useEffect(() => {
-    if (tab === 'recap') {
-      loadRecap();
-    }
+    if (tab !== 'recap') return;
+    const controller = new AbortController();
+    void loadRecap(controller.signal);
+    return () => controller.abort();
   }, [tab, classId]);
 
   const seatNumberById = useMemo(() => {
@@ -211,7 +231,7 @@ export function ClassWorkspace({
         });
       }
       setModModalOpen(false);
-      await loadAll();
+      await refreshModulesOnly();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Gagal menyimpan modul.');
     } finally {
@@ -225,7 +245,7 @@ export function ClassWorkspace({
     try {
       await api.deleteModule(deleteModTarget.id);
       setDeleteModTarget(null);
-      await loadAll();
+      await refreshModulesOnly();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Gagal menghapus modul.');
     } finally {
@@ -445,14 +465,27 @@ export function ClassWorkspace({
         )}
 
         {loading ? (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
-            {[1, 2, 3, 4].map((i) => (
-              <div key={i} className="surface-card rounded-2xl p-5 animate-pulse space-y-3">
-                <div className="h-5 w-2/3 rounded-lg bg-slate-100" />
-                <div className="h-4 w-1/3 rounded bg-slate-100" />
-                <div className="h-2 w-full rounded-full bg-slate-100 mt-4" />
+          <div className="space-y-4">
+            <div className="flex items-center justify-between gap-2">
+              <div className="space-y-1.5">
+                <div className="h-5 w-36 rounded-lg skeleton-shimmer" />
+                <div className="h-3.5 w-60 rounded skeleton-shimmer" />
               </div>
-            ))}
+              <div className="h-11 w-32 rounded-xl skeleton-shimmer" />
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+              {[1, 2, 3, 4].map((i) => (
+                <div key={i} className="surface-card rounded-2xl p-5 space-y-3">
+                  <div className="h-5 w-28 rounded-md skeleton-shimmer" />
+                  <div className="h-5 w-2/3 rounded-lg skeleton-shimmer" />
+                  <div className="h-2 w-full rounded-full skeleton-shimmer mt-4" />
+                  <div className="pt-3 border-t border-slate-100 grid grid-cols-2 gap-3">
+                    <div className="h-8 rounded-lg skeleton-shimmer" />
+                    <div className="h-8 rounded-lg skeleton-shimmer" />
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         ) : (
           <>
@@ -788,13 +821,20 @@ export function ClassWorkspace({
             {tab === 'recap' && (
               <div className="space-y-5">
                 {!recap ? (
-                  <div className="space-y-4 animate-pulse">
+                  <div className="space-y-4">
                     <div className="grid grid-cols-3 gap-3">
                       {[1, 2, 3].map((i) => (
-                        <div key={i} className="surface-card rounded-2xl h-20" />
+                        <div key={i} className="surface-card rounded-2xl p-4 space-y-2">
+                          <div className="h-3 w-16 rounded skeleton-shimmer" />
+                          <div className="h-6 w-12 rounded-md skeleton-shimmer" />
+                        </div>
                       ))}
                     </div>
-                    <div className="surface-card rounded-2xl h-64" />
+                    <div className="surface-card rounded-2xl p-5 space-y-3">
+                      {[1, 2, 3, 4, 5].map((i) => (
+                        <div key={i} className="h-9 rounded-lg skeleton-shimmer" />
+                      ))}
+                    </div>
                   </div>
                 ) : (
                   <>
@@ -1394,18 +1434,20 @@ export function ClassWorkspace({
         </div>
       </Modal>
 
-      {cls?.externalClassId && (
-        <IclabsSyncModal
-          open={resyncOpen}
-          onClose={() => setResyncOpen(false)}
-          onSynced={loadAll}
-          presetClass={{
-            externalClassId: cls.externalClassId,
-            title: cls.title,
-            courseCode: cls.courseCode,
-            groupName: cls.groupName,
-          }}
-        />
+      {resyncOpen && cls?.externalClassId && (
+        <Suspense fallback={null}>
+          <IclabsSyncModal
+            open={resyncOpen}
+            onClose={() => setResyncOpen(false)}
+            onSynced={() => void loadAll()}
+            presetClass={{
+              externalClassId: cls.externalClassId,
+              title: cls.title,
+              courseCode: cls.courseCode,
+              groupName: cls.groupName,
+            }}
+          />
+        </Suspense>
       )}
     </div>
   );

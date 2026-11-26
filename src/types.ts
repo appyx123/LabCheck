@@ -56,6 +56,7 @@ export interface BoardData {
     title: string;
     source: string;
     syncCode?: string;
+    memberCount?: number;
   };
   module: {
     id: string;

@@ -106,6 +106,22 @@ export async function ensureSchema(client: Client): Promise<EnsureSchemaReport> 
     `CREATE UNIQUE INDEX IF NOT EXISTS uq_classes_sync_code ON classes (sync_code)`
   );
 
+  // Enforce unique external_class_id at DB level when no legacy duplicates exist
+  const dupExtRes = await client.execute(
+    `SELECT 1 FROM classes
+     WHERE external_class_id IS NOT NULL AND external_class_id != ''
+     GROUP BY external_class_id
+     HAVING count(*) > 1
+     LIMIT 1`
+  );
+  if (dupExtRes.rows.length === 0) {
+    await client.execute(
+      `CREATE UNIQUE INDEX IF NOT EXISTS uq_classes_external_class_id
+       ON classes (external_class_id)
+       WHERE external_class_id IS NOT NULL AND external_class_id != ''`
+    );
+  }
+
   // Backfill sync_code for existing classes without one
   const missingCodeRes = await client.execute(
     `SELECT id FROM classes WHERE sync_code IS NULL OR sync_code = ''`

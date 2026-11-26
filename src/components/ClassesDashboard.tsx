@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useState, type FormEvent } from 'react';
 import {
   AlertCircle,
   BookOpen,
@@ -18,10 +18,13 @@ import {
   Users,
   X,
 } from 'lucide-react';
-import { api } from '../lib/api';
+import { api, isAbortError } from '../lib/api';
 import type { ClassItem, User } from '../types';
 import { Modal } from './Modal';
-import { IclabsSyncModal } from './IclabsSyncModal';
+
+const IclabsSyncModal = lazy(() =>
+  import('./IclabsSyncModal').then((m) => ({ default: m.IclabsSyncModal }))
+);
 
 interface ClassesDashboardProps {
   user: User;
@@ -58,20 +61,23 @@ export function ClassesDashboard({ user, onLogout, onOpenClass }: ClassesDashboa
   const [joinError, setJoinError] = useState('');
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
-  async function loadClasses() {
+  async function loadClasses(signal?: AbortSignal) {
     setError('');
     try {
-      const res = await api.getClasses();
-      setClasses(res.classes);
+      const res = await api.getClasses(signal);
+      if (!signal?.aborted) setClasses(res.classes);
     } catch (err) {
+      if (isAbortError(err)) return;
       setError(err instanceof Error ? err.message : 'Gagal memuat daftar kelas.');
     } finally {
-      setLoading(false);
+      if (!signal?.aborted) setLoading(false);
     }
   }
 
   useEffect(() => {
-    loadClasses();
+    const controller = new AbortController();
+    void loadClasses(controller.signal);
+    return () => controller.abort();
   }, []);
 
   const stats = useMemo(() => {
@@ -357,21 +363,31 @@ export function ClassesDashboard({ user, onLogout, onOpenClass }: ClassesDashboa
         )}
 
         {loading ? (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
-            {[1, 2, 3, 4].map((i) => (
-              <div
-                key={i}
-                className="surface-card rounded-2xl p-5 animate-pulse space-y-3"
-              >
-                <div className="h-5 w-24 rounded-full bg-slate-100" />
-                <div className="h-5 w-3/4 rounded-lg bg-slate-100" />
-                <div className="h-4 w-1/2 rounded-lg bg-slate-100" />
-                <div className="pt-3 border-t border-slate-100 flex gap-4">
-                  <div className="h-4 w-20 rounded bg-slate-100" />
-                  <div className="h-4 w-16 rounded bg-slate-100" />
+          <div className="space-y-6">
+            <div className="grid grid-cols-3 gap-2.5 sm:gap-3">
+              {[1, 2, 3].map((i) => (
+                <div key={i} className="surface-card rounded-2xl px-3.5 py-3 sm:px-4 sm:py-3.5 space-y-2">
+                  <div className="h-3 w-16 rounded skeleton-shimmer" />
+                  <div className="h-6 w-12 rounded-md skeleton-shimmer" />
                 </div>
-              </div>
-            ))}
+              ))}
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+              {[1, 2, 3, 4].map((i) => (
+                <div key={i} className="surface-card rounded-2xl p-5 space-y-3">
+                  <div className="flex gap-1.5">
+                    <div className="h-5 w-16 rounded-md skeleton-shimmer" />
+                    <div className="h-5 w-24 rounded-md skeleton-shimmer" />
+                  </div>
+                  <div className="h-5 w-3/4 rounded-lg skeleton-shimmer" />
+                  <div className="h-4 w-1/2 rounded-lg skeleton-shimmer" />
+                  <div className="pt-3 border-t border-slate-100 flex gap-4">
+                    <div className="h-4 w-20 rounded skeleton-shimmer" />
+                    <div className="h-4 w-16 rounded skeleton-shimmer" />
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         ) : classes.length === 0 ? (
           <div className="surface-card rounded-2xl p-8 sm:p-12 text-center">
@@ -754,11 +770,15 @@ export function ClassesDashboard({ user, onLogout, onOpenClass }: ClassesDashboa
         </div>
       </Modal>
 
-      <IclabsSyncModal
-        open={iclabsOpen}
-        onClose={() => setIclabsOpen(false)}
-        onSynced={loadClasses}
-      />
+      {iclabsOpen && (
+        <Suspense fallback={null}>
+          <IclabsSyncModal
+            open={iclabsOpen}
+            onClose={() => setIclabsOpen(false)}
+            onSynced={() => void loadClasses()}
+          />
+        </Suspense>
+      )}
     </div>
   );
 }

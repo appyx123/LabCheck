@@ -172,6 +172,36 @@ const iclabsSyncSchema = z
 const INSERT_CHUNK_SIZE = 80;
 const UPDATE_BATCH_SIZE = 50;
 
+function isUniqueConstraintError(err: unknown): boolean {
+  let cur: unknown = err;
+  for (let depth = 0; depth < 4 && cur; depth += 1) {
+    const msg = cur instanceof Error ? cur.message : String(cur);
+    if (
+      msg.includes('UNIQUE constraint failed') ||
+      msg.includes('SQLITE_CONSTRAINT_UNIQUE') ||
+      msg.includes('SQLITE_CONSTRAINT')
+    ) {
+      return true;
+    }
+    cur = typeof cur === 'object' && cur !== null && 'cause' in cur ? (cur as { cause?: unknown }).cause : null;
+  }
+  return false;
+}
+
+function hashTag(input: string): string {
+  // Fast deterministic 64-bit-ish hex tag (two 32-bit FNV-1a passes) for HTTP ETag
+  let h1 = 0x811c9dc5;
+  let h2 = 0x9e3779b9;
+  for (let i = 0; i < input.length; i += 1) {
+    const code = input.charCodeAt(i);
+    h1 ^= code;
+    h1 = Math.imul(h1, 0x01000193);
+    h2 ^= code + i;
+    h2 = Math.imul(h2, 0x85ebca6b);
+  }
+  return `"b-${(h1 >>> 0).toString(36)}-${(h2 >>> 0).toString(36)}"`;
+}
+
 async function generateUniqueSyncCode(db: AppDb): Promise<string> {
   for (let attempt = 0; attempt < 10; attempt += 1) {
     const code = generateSyncCode();
@@ -220,6 +250,84 @@ async function getModuleWithMembership(db: AppDb, moduleId: string, userId: stri
     .where(eq(modules.id, moduleId))
     .limit(1);
   return row ?? null;
+}
+
+async function getModuleStudentAccess(
+  db: AppDb,
+  moduleId: string,
+  studentId: string,
+  userId: string
+) {
+  const [row] = await db
+    .select({
+      mod: modules,
+      matchedStudentId: students.id,
+    })
+    .from(modules)
+    .innerJoin(
+      classMembers,
+      and(eq(classMembers.classId, modules.classId), eq(classMembers.userId, userId))
+    )
+    .leftJoin(
+      students,
+      and(eq(students.id, studentId), eq(students.classId, modules.classId))
+    )
+    .where(eq(modules.id, moduleId))
+    .limit(1);
+  return row ?? null;
+}
+
+async function buildModulesWithStats(
+  db: AppDb,
+  modRows: Array<typeof modules.$inferSelect>,
+  studentCount: number
+) {
+  const modIds = modRows.map((m) => m.id);
+  const completionRows =
+    modIds.length > 0
+      ? await db
+          .select({
+            moduleId: taskCompletions.moduleId,
+            studentId: taskCompletions.studentId,
+            cnt: sql<number>`count(*)`,
+          })
+          .from(taskCompletions)
+          .where(inArray(taskCompletions.moduleId, modIds))
+          .groupBy(taskCompletions.moduleId, taskCompletions.studentId)
+      : [];
+
+  const byMod = new Map<string, { studentScores: number[]; fullCount: number }>();
+  for (const m of modRows) byMod.set(m.id, { studentScores: [], fullCount: 0 });
+  const modTaskMap = new Map(modRows.map((m) => [m.id, m.taskCount]));
+
+  for (const r of completionRows) {
+    const entry = byMod.get(r.moduleId);
+    const tc = modTaskMap.get(r.moduleId) ?? 1;
+    if (entry) {
+      const cNum = Number(r.cnt);
+      entry.studentScores.push(calcModuleScore(cNum, tc));
+      if (cNum >= tc) entry.fullCount += 1;
+    }
+  }
+
+  return modRows.map((m) => {
+    const stats = byMod.get(m.id) ?? { studentScores: [], fullCount: 0 };
+    const totalScoreSum = stats.studentScores.reduce((acc, s) => acc + s, 0);
+    const averageScore = studentCount > 0 ? roundScore(totalScoreSum / studentCount) : 0;
+    return {
+      id: m.id,
+      classId: m.classId,
+      title: m.title,
+      moduleDate: m.moduleDate ?? null,
+      taskCount: m.taskCount,
+      pointsPerTask: pointsPerTask(m.taskCount),
+      orderIndex: m.orderIndex,
+      createdAt: m.createdAt.toISOString(),
+      studentCount,
+      completedAllCount: stats.fullCount,
+      averageScore,
+    };
+  });
 }
 
 async function upsertStudentsBatch(
@@ -395,7 +503,7 @@ export function createApp(options: CreateAppOptions = {}) {
     return c.json({ ok: true });
   });
 
-  // Auth middleware for protected routes
+  // Auth middleware for protected routes (stateless HMAC-verified JWT -> saves 1 DB round-trip/request)
   const requireAuth: MiddlewareHandler<{ Bindings: AppBindings; Variables: AppVariables }> = async (
     c,
     next
@@ -408,23 +516,25 @@ export function createApp(options: CreateAppOptions = {}) {
     if (!payload) {
       return c.json({ error: 'Sesi sudah berakhir. Silakan login kembali.' }, 401);
     }
-    const db = c.get('db');
-    const [found] = await db
-      .select({ id: users.id, name: users.name, email: users.email })
-      .from(users)
-      .where(eq(users.id, payload.sub))
-      .limit(1);
 
-    if (!found) {
-      return c.json({ error: 'Akun tidak ditemukan.' }, 401);
-    }
-
-    c.set('user', found);
+    c.set('user', { id: payload.sub, name: payload.name, email: payload.email });
     await next();
   };
 
-  app.get('/api/auth/me', requireAuth, (c) => {
-    return c.json({ user: c.get('user') });
+  app.get('/api/auth/me', requireAuth, async (c) => {
+    const db = c.get('db');
+    const authUser = c.get('user');
+    const [found] = await db
+      .select({ id: users.id, name: users.name, email: users.email })
+      .from(users)
+      .where(eq(users.id, authUser.id))
+      .limit(1);
+
+    if (!found) {
+      deleteCookie(c, SESSION_COOKIE, { path: '/' });
+      return c.json({ error: 'Akun tidak ditemukan.' }, 401);
+    }
+    return c.json({ user: found });
   });
 
   // Apply requireAuth to all protected routes
@@ -513,17 +623,28 @@ export function createApp(options: CreateAppOptions = {}) {
     const { title, description } = c.req.valid('json');
 
     const id = newId();
-    const syncCode = await generateUniqueSyncCode(db);
     const createdAt = new Date();
-    await db.insert(classes).values({
-      id,
-      userId: user.id,
-      title,
-      description: description || null,
-      source: 'manual',
-      syncCode,
-      createdAt,
-    });
+    let syncCode = '';
+
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      syncCode = await generateUniqueSyncCode(db);
+      try {
+        await db.insert(classes).values({
+          id,
+          userId: user.id,
+          title,
+          description: description || null,
+          source: 'manual',
+          syncCode,
+          createdAt,
+        });
+        break;
+      } catch (err) {
+        if (attempt < 4 && isUniqueConstraintError(err)) continue;
+        throw err;
+      }
+    }
+
     await db.insert(classMembers).values({
       id: newId(),
       classId: id,
@@ -650,6 +771,9 @@ export function createApp(options: CreateAppOptions = {}) {
         .orderBy(asc(modules.orderIndex), asc(modules.createdAt)),
     ]);
 
+    const studentCountNum = Number(studentCount);
+    const modulesWithStats = await buildModulesWithStats(db, modRows, studentCountNum);
+
     return c.json({
       class: {
         id: cls.id,
@@ -664,19 +788,10 @@ export function createApp(options: CreateAppOptions = {}) {
         memberCount: Number(memberCount),
         lastSyncedAt: cls.lastSyncedAt ? cls.lastSyncedAt.toISOString() : null,
         createdAt: cls.createdAt.toISOString(),
-        studentCount: Number(studentCount),
+        studentCount: studentCountNum,
         moduleCount: modRows.length,
       },
-      modules: modRows.map((m) => ({
-        id: m.id,
-        classId: m.classId,
-        title: m.title,
-        moduleDate: m.moduleDate ?? null,
-        taskCount: m.taskCount,
-        pointsPerTask: pointsPerTask(m.taskCount),
-        orderIndex: m.orderIndex,
-        createdAt: m.createdAt.toISOString(),
-      })),
+      modules: modulesWithStats,
     });
   });
 
@@ -963,17 +1078,64 @@ export function createApp(options: CreateAppOptions = {}) {
             lastSyncedAt: now,
             createdAt: now,
           };
-          await db.insert(classes).values(newClassRow);
-          await db.insert(classMembers).values({
-            id: newId(),
-            classId: localClassId,
-            userId: user.id,
-            role: 'owner',
-            joinedAt: now,
-          });
-          existingClassByExtId.set(clsInput.externalClassId, newClassRow);
-          userMemberClassIds.add(localClassId);
-          classesCreated += 1;
+
+          let insertedClass = false;
+          for (let attempt = 0; attempt < 4; attempt += 1) {
+            try {
+              await db.insert(classes).values(newClassRow);
+              insertedClass = true;
+              break;
+            } catch (err) {
+              if (!isUniqueConstraintError(err)) throw err;
+              // Another assistant may have created the same ICLabs class at the exact same moment
+              const [concurrentCls] = await db
+                .select()
+                .from(classes)
+                .where(eq(classes.externalClassId, clsInput.externalClassId))
+                .orderBy(asc(classes.createdAt))
+                .limit(1);
+              if (concurrentCls) {
+                isNewClass = false;
+                localClassId = concurrentCls.id;
+                finalTitle = concurrentCls.title;
+                finalSyncCode = concurrentCls.syncCode || finalSyncCode;
+                await db
+                  .insert(classMembers)
+                  .values({
+                    id: newId(),
+                    classId: concurrentCls.id,
+                    userId: user.id,
+                    role: 'member',
+                    joinedAt: now,
+                  })
+                  .onConflictDoNothing({
+                    target: [classMembers.classId, classMembers.userId],
+                  });
+                existingClassByExtId.set(clsInput.externalClassId, concurrentCls);
+                userMemberClassIds.add(concurrentCls.id);
+                joinedShared = true;
+                classesJoined += 1;
+                break;
+              }
+              // Otherwise syncCode collided; retry with a fresh code
+              finalSyncCode = await generateUniqueSyncCode(db);
+              newClassRow.syncCode = finalSyncCode;
+              if (attempt === 3) throw err;
+            }
+          }
+
+          if (insertedClass) {
+            await db.insert(classMembers).values({
+              id: newId(),
+              classId: localClassId,
+              userId: user.id,
+              role: 'owner',
+              joinedAt: now,
+            });
+            existingClassByExtId.set(clsInput.externalClassId, newClassRow);
+            userMemberClassIds.add(localClassId);
+            classesCreated += 1;
+          }
         }
 
         const studentRes = await upsertStudentsBatch(
@@ -1064,14 +1226,21 @@ export function createApp(options: CreateAppOptions = {}) {
     const id = newId();
     const createdAt = new Date();
     const finalStatus = status?.trim() || 'AKTIF';
-    await db.insert(students).values({
-      id,
-      classId,
-      nim,
-      name,
-      status: finalStatus,
-      createdAt,
-    });
+    try {
+      await db.insert(students).values({
+        id,
+        classId,
+        nim,
+        name,
+        status: finalStatus,
+        createdAt,
+      });
+    } catch (err) {
+      if (isUniqueConstraintError(err)) {
+        return c.json({ error: `NIM ${nim} sudah ada di kelas ini.` }, 409);
+      }
+      throw err;
+    }
 
     return c.json(
       {
@@ -1118,10 +1287,17 @@ export function createApp(options: CreateAppOptions = {}) {
       if (dup) return c.json({ error: `NIM ${nextNim} sudah digunakan di kelas ini.` }, 409);
     }
 
-    await db
-      .update(students)
-      .set({ nim: nextNim, name: nextName, status: nextStatus })
-      .where(eq(students.id, studentId));
+    try {
+      await db
+        .update(students)
+        .set({ nim: nextNim, name: nextName, status: nextStatus })
+        .where(eq(students.id, studentId));
+    } catch (err) {
+      if (isUniqueConstraintError(err)) {
+        return c.json({ error: `NIM ${nextNim} sudah digunakan di kelas ini.` }, 409);
+      }
+      throw err;
+    }
 
     return c.json({
       student: {
@@ -1158,67 +1334,20 @@ export function createApp(options: CreateAppOptions = {}) {
     const access = await getClassWithMembership(db, classId, user.id);
     if (!access) return c.json({ error: 'Kelas tidak ditemukan.' }, 404);
 
-    const modRows = await db
-      .select()
-      .from(modules)
-      .where(eq(modules.classId, classId))
-      .orderBy(asc(modules.orderIndex), asc(modules.createdAt));
+    const [modRows, [{ count: studentCountRaw }]] = await Promise.all([
+      db
+        .select()
+        .from(modules)
+        .where(eq(modules.classId, classId))
+        .orderBy(asc(modules.orderIndex), asc(modules.createdAt)),
+      db
+        .select({ count: sql<number>`count(*)` })
+        .from(students)
+        .where(eq(students.classId, classId)),
+    ]);
 
-    const [{ count: studentCountRaw }] = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(students)
-      .where(eq(students.classId, classId));
-    const studentCount = Number(studentCountRaw);
-
-    const modIds = modRows.map((m) => m.id);
-    const completionRows =
-      modIds.length > 0
-        ? await db
-            .select({
-              moduleId: taskCompletions.moduleId,
-              studentId: taskCompletions.studentId,
-              cnt: sql<number>`count(*)`,
-            })
-            .from(taskCompletions)
-            .where(inArray(taskCompletions.moduleId, modIds))
-            .groupBy(taskCompletions.moduleId, taskCompletions.studentId)
-        : [];
-
-    const byMod = new Map<string, { studentScores: number[]; fullCount: number }>();
-    for (const m of modRows) byMod.set(m.id, { studentScores: [], fullCount: 0 });
-    const modTaskMap = new Map(modRows.map((m) => [m.id, m.taskCount]));
-
-    for (const r of completionRows) {
-      const entry = byMod.get(r.moduleId);
-      const tc = modTaskMap.get(r.moduleId) ?? 1;
-      if (entry) {
-        const cNum = Number(r.cnt);
-        entry.studentScores.push(calcModuleScore(cNum, tc));
-        if (cNum >= tc) entry.fullCount += 1;
-      }
-    }
-
-    return c.json({
-      modules: modRows.map((m) => {
-        const stats = byMod.get(m.id) ?? { studentScores: [], fullCount: 0 };
-        const totalScoreSum = stats.studentScores.reduce((acc, s) => acc + s, 0);
-        const averageScore =
-          studentCount > 0 ? roundScore(totalScoreSum / studentCount) : 0;
-        return {
-          id: m.id,
-          classId: m.classId,
-          title: m.title,
-          moduleDate: m.moduleDate ?? null,
-          taskCount: m.taskCount,
-          pointsPerTask: pointsPerTask(m.taskCount),
-          orderIndex: m.orderIndex,
-          createdAt: m.createdAt.toISOString(),
-          studentCount,
-          completedAllCount: stats.fullCount,
-          averageScore,
-        };
-      }),
-    });
+    const modulesWithStats = await buildModulesWithStats(db, modRows, Number(studentCountRaw));
+    return c.json({ modules: modulesWithStats });
   });
 
   app.post('/api/classes/:id/modules', zValidator('json', moduleCreateSchema), async (c) => {
@@ -1339,19 +1468,24 @@ export function createApp(options: CreateAppOptions = {}) {
       return c.json({ error: 'Modul tidak ditemukan.' }, 404);
     }
 
-    const studentRows = await db
-      .select()
-      .from(students)
-      .where(eq(students.classId, row.cls.id))
-      .orderBy(asc(students.nim));
-
-    const completionRows = await db
-      .select({
-        studentId: taskCompletions.studentId,
-        taskNumber: taskCompletions.taskNumber,
-      })
-      .from(taskCompletions)
-      .where(eq(taskCompletions.moduleId, moduleId));
+    const [studentRows, completionRows, [{ count: memberCountRaw }]] = await Promise.all([
+      db
+        .select()
+        .from(students)
+        .where(eq(students.classId, row.cls.id))
+        .orderBy(asc(students.nim)),
+      db
+        .select({
+          studentId: taskCompletions.studentId,
+          taskNumber: taskCompletions.taskNumber,
+        })
+        .from(taskCompletions)
+        .where(eq(taskCompletions.moduleId, moduleId)),
+      db
+        .select({ count: sql<number>`count(*)` })
+        .from(classMembers)
+        .where(eq(classMembers.classId, row.cls.id)),
+    ]);
 
     const completionsMap: Record<string, number[]> = {};
     for (const st of studentRows) completionsMap[st.id] = [];
@@ -1365,12 +1499,31 @@ export function createApp(options: CreateAppOptions = {}) {
       completionsMap[key].sort((a, b) => a - b);
     }
 
+    const memberCount = Number(memberCountRaw ?? 1);
+    const fingerprint = [
+      row.cls.title,
+      row.cls.syncCode || '',
+      String(memberCount),
+      row.mod.title,
+      row.mod.moduleDate || '',
+      String(row.mod.taskCount),
+      studentRows.map((s) => `${s.id}:${s.nim}:${s.name}:${s.status}:${(completionsMap[s.id] || []).join(',')}`).join('|'),
+    ].join('#');
+    const etag = hashTag(fingerprint);
+
+    c.header('ETag', etag);
+    c.header('Cache-Control', 'private, no-cache');
+    if (c.req.header('if-none-match') === etag) {
+      return c.body(null, 304);
+    }
+
     return c.json({
       class: {
         id: row.cls.id,
         title: row.cls.title,
         source: row.cls.source,
         syncCode: row.cls.syncCode || '',
+        memberCount,
       },
       module: {
         id: row.mod.id,
@@ -1397,7 +1550,7 @@ export function createApp(options: CreateAppOptions = {}) {
     const moduleId = c.req.param('id');
     const { studentId, taskNumber, completed } = c.req.valid('json');
 
-    const row = await getModuleWithMembership(db, moduleId, user.id);
+    const row = await getModuleStudentAccess(db, moduleId, studentId, user.id);
     if (!row) {
       return c.json({ error: 'Modul tidak ditemukan.' }, 404);
     }
@@ -1409,13 +1562,7 @@ export function createApp(options: CreateAppOptions = {}) {
       );
     }
 
-    const [st] = await db
-      .select({ id: students.id })
-      .from(students)
-      .where(and(eq(students.id, studentId), eq(students.classId, row.mod.classId)))
-      .limit(1);
-
-    if (!st) {
+    if (!row.matchedStudentId) {
       return c.json({ error: 'Praktikan tidak ditemukan di kelas ini.' }, 404);
     }
 
@@ -1453,18 +1600,12 @@ export function createApp(options: CreateAppOptions = {}) {
     const moduleId = c.req.param('id');
     const { studentId, completed } = c.req.valid('json');
 
-    const row = await getModuleWithMembership(db, moduleId, user.id);
+    const row = await getModuleStudentAccess(db, moduleId, studentId, user.id);
     if (!row) {
       return c.json({ error: 'Modul tidak ditemukan.' }, 404);
     }
 
-    const [st] = await db
-      .select({ id: students.id })
-      .from(students)
-      .where(and(eq(students.id, studentId), eq(students.classId, row.mod.classId)))
-      .limit(1);
-
-    if (!st) {
+    if (!row.matchedStudentId) {
       return c.json({ error: 'Praktikan tidak ditemukan di kelas ini.' }, 404);
     }
 
