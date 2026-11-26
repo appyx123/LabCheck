@@ -139,6 +139,7 @@ export function IclabsSyncModal({
       const aggregated: IclabsSyncResponse = {
         summary: {
           classesCreated: 0,
+          classesJoined: 0,
           classesUpdated: 0,
           studentsInserted: 0,
           studentsUpdated: 0,
@@ -162,6 +163,8 @@ export function IclabsSyncModal({
           })),
         });
         aggregated.summary.classesCreated += res.summary.classesCreated;
+        aggregated.summary.classesJoined =
+          (aggregated.summary.classesJoined ?? 0) + (res.summary.classesJoined ?? 0);
         aggregated.summary.classesUpdated += res.summary.classesUpdated;
         aggregated.summary.studentsInserted += res.summary.studentsInserted;
         aggregated.summary.studentsUpdated += res.summary.studentsUpdated;
@@ -386,10 +389,16 @@ export function IclabsSyncModal({
                             className={`px-2 py-0.5 rounded-md text-[10px] font-semibold shrink-0 ${
                               cls.alreadySynced
                                 ? 'bg-indigo-50 text-indigo-700'
-                                : 'bg-emerald-50 text-emerald-700'
+                                : cls.sharedExisting
+                                  ? 'bg-teal-50 text-teal-700'
+                                  : 'bg-emerald-50 text-emerald-700'
                             }`}
                           >
-                            {cls.alreadySynced ? 'Update' : 'Baru'}
+                            {cls.alreadySynced
+                              ? 'Update'
+                              : cls.sharedExisting
+                                ? 'Gabung'
+                                : 'Baru'}
                           </span>
                         </div>
                         <p className="text-xs text-slate-500 mt-0.5 font-mono tabular-nums">
@@ -441,8 +450,12 @@ export function IclabsSyncModal({
             <div className="text-sm text-emerald-950">
               <p className="font-semibold">Sinkronisasi berhasil!</p>
               <p className="text-xs text-emerald-800 mt-1 tabular-nums leading-relaxed">
-                {syncResult.summary.classesCreated} kelas baru, {syncResult.summary.classesUpdated}{' '}
-                kelas diperbarui · {syncResult.summary.studentsInserted} praktikan baru,{' '}
+                {syncResult.summary.classesCreated} kelas baru
+                {(syncResult.summary.classesJoined ?? 0) > 0
+                  ? `, ${syncResult.summary.classesJoined} gabung sinkron`
+                  : ''}
+                , {syncResult.summary.classesUpdated} diperbarui ·{' '}
+                {syncResult.summary.studentsInserted} praktikan baru,{' '}
                 {syncResult.summary.studentsUpdated} diperbarui.
               </p>
             </div>
@@ -451,7 +464,17 @@ export function IclabsSyncModal({
           <div className="border border-slate-200/90 rounded-xl divide-y divide-slate-100 max-h-[38dvh] overflow-y-auto">
             {syncResult.syncedClasses.map((sc) => (
               <div key={sc.id} className="px-3.5 py-3 flex items-center justify-between gap-2">
-                <span className="text-sm font-semibold text-slate-900 truncate">{sc.title}</span>
+                <div className="min-w-0">
+                  <span className="text-sm font-semibold text-slate-900 truncate block">
+                    {sc.title}
+                  </span>
+                  {sc.syncCode && (
+                    <span className="text-[11px] font-mono text-slate-500">
+                      Kode: {sc.syncCode}
+                      {sc.joined ? ' · Tersinkron dengan asisten lain' : ''}
+                    </span>
+                  )}
+                </div>
                 <span className="px-2 py-0.5 rounded-md bg-slate-100 text-xs font-medium text-slate-600 tabular-nums shrink-0">
                   {sc.participantCount} peserta
                 </span>

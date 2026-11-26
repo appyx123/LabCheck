@@ -19,6 +19,7 @@ export const classes = sqliteTable(
     description: text('description'),
     source: text('source').notNull().default('manual'), // 'manual' | 'iclabs'
     externalClassId: text('external_class_id'),
+    syncCode: text('sync_code'),
     courseCode: text('course_code'),
     groupName: text('group_name'),
     lastSyncedAt: integer('last_synced_at', { mode: 'timestamp_ms' }),
@@ -27,6 +28,27 @@ export const classes = sqliteTable(
   (t) => [
     index('idx_classes_user_id').on(t.userId),
     index('idx_classes_user_external').on(t.userId, t.externalClassId),
+    index('idx_classes_external_class_id').on(t.externalClassId),
+    uniqueIndex('uq_classes_sync_code').on(t.syncCode),
+  ]
+);
+
+export const classMembers = sqliteTable(
+  'class_members',
+  {
+    id: text('id').primaryKey(),
+    classId: text('class_id')
+      .notNull()
+      .references(() => classes.id, { onDelete: 'cascade' }),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    role: text('role').notNull().default('member'), // 'owner' | 'member'
+    joinedAt: integer('joined_at', { mode: 'timestamp_ms' }).notNull(),
+  },
+  (t) => [
+    uniqueIndex('uq_class_members_class_user').on(t.classId, t.userId),
+    index('idx_class_members_user_id').on(t.userId),
   ]
 );
 
@@ -86,6 +108,7 @@ export const taskCompletions = sqliteTable(
 
 export type UserRow = typeof users.$inferSelect;
 export type ClassRow = typeof classes.$inferSelect;
+export type ClassMemberRow = typeof classMembers.$inferSelect;
 export type StudentRow = typeof students.$inferSelect;
 export type ModuleRow = typeof modules.$inferSelect;
 export type TaskCompletionRow = typeof taskCompletions.$inferSelect;

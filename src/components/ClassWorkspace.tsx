@@ -4,8 +4,10 @@ import {
   ArrowLeft,
   BarChart3,
   Calendar,
+  Check,
   CheckSquare,
   CloudDownload,
+  Copy,
   Download,
   Edit3,
   FileSpreadsheet,
@@ -88,6 +90,18 @@ export function ClassWorkspace({
 
   const [resyncOpen, setResyncOpen] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [copiedCode, setCopiedCode] = useState(false);
+
+  async function handleCopySyncCode() {
+    if (!cls?.syncCode) return;
+    try {
+      await navigator.clipboard.writeText(cls.syncCode);
+      setCopiedCode(true);
+      setTimeout(() => setCopiedCode(false), 1800);
+    } catch {
+      // ignore
+    }
+  }
 
   async function loadAll() {
     setError('');
@@ -355,9 +369,32 @@ export function ClassWorkspace({
                   </span>
                 )}
               </div>
-              <p className="text-[11px] font-medium text-slate-500 tabular-nums">
-                {students.length} praktikan · {modules.length} modul
-              </p>
+              <div className="flex items-center gap-2 flex-wrap">
+                <p className="text-[11px] font-medium text-slate-500 tabular-nums">
+                  {students.length} praktikan · {modules.length} modul
+                  {(cls?.memberCount ?? 1) > 1 ? ` · ${cls?.memberCount} asisten` : ''}
+                </p>
+                {cls?.syncCode && (
+                  <button
+                    type="button"
+                    onClick={handleCopySyncCode}
+                    title="Salin kode sinkronisasi kelas"
+                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-50 hover:bg-amber-100/80 text-amber-800 border border-amber-200/70 text-[10px] font-mono font-semibold transition"
+                  >
+                    {copiedCode ? (
+                      <>
+                        <Check className="w-3 h-3 text-emerald-600" />
+                        Tersalin
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="w-3 h-3" />
+                        {cls.syncCode}
+                      </>
+                    )}
+                  </button>
+                )}
+              </div>
             </div>
           </div>
 

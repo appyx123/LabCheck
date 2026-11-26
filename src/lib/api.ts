@@ -4,6 +4,7 @@ import type {
   ClassRecapData,
   IclabsPreviewClass,
   IclabsSyncResponse,
+  JoinClassResponse,
   ModuleItem,
   ModuleRecapData,
   StudentItem,
@@ -84,6 +85,13 @@ export const api = {
     apiFetch<{ class: ClassItem; modules: ModuleItem[] }>(`/api/classes/${id}`),
   createClass: (body: { title: string; description?: string }) =>
     apiFetch<{ class: ClassItem }>('/api/classes', { method: 'POST', body: JSON.stringify(body) }),
+  joinClass: (code: string) =>
+    apiFetch<JoinClassResponse>('/api/classes/join', {
+      method: 'POST',
+      body: JSON.stringify({ code }),
+    }),
+  leaveClass: (id: string) =>
+    apiFetch<{ ok: boolean }>(`/api/classes/${id}/leave`, { method: 'POST' }),
   updateClass: (id: string, body: { title?: string; description?: string | null }) =>
     apiFetch<{ class: ClassItem }>(`/api/classes/${id}`, {
       method: 'PATCH',

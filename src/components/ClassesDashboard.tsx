@@ -5,7 +5,9 @@ import {
   Check,
   ChevronRight,
   CloudDownload,
+  Copy,
   Edit3,
+  KeyRound,
   Layers,
   Loader2,
   LogOut,
@@ -48,7 +50,13 @@ export function ClassesDashboard({ user, onLogout, onOpenClass }: ClassesDashboa
 
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ClassItem | null>(null);
+  const [leaveTarget, setLeaveTarget] = useState<ClassItem | null>(null);
   const [iclabsOpen, setIclabsOpen] = useState(false);
+
+  const [joinOpen, setJoinOpen] = useState(false);
+  const [joinCodeInput, setJoinCodeInput] = useState('');
+  const [joinError, setJoinError] = useState('');
+  const [copiedId, setCopiedId] = useState<string | null>(null);
 
   async function loadClasses() {
     setError('');
@@ -84,7 +92,9 @@ export function ClassesDashboard({ user, onLogout, onOpenClass }: ClassesDashboa
         c.title.toLowerCase().includes(q) ||
         (c.description || '').toLowerCase().includes(q) ||
         (c.courseCode || '').toLowerCase().includes(q) ||
-        (c.groupName || '').toLowerCase().includes(q)
+        (c.groupName || '').toLowerCase().includes(q) ||
+        (c.syncCode || '').toLowerCase().includes(q) ||
+        (c.externalClassId || '').toLowerCase().includes(q)
     );
   }, [classes, searchQuery]);
 
@@ -139,6 +149,48 @@ export function ClassesDashboard({ user, onLogout, onOpenClass }: ClassesDashboa
       setError(err instanceof Error ? err.message : 'Gagal menghapus kelas.');
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function handleConfirmLeave() {
+    if (!leaveTarget) return;
+    setSaving(true);
+    try {
+      await api.leaveClass(leaveTarget.id);
+      setLeaveTarget(null);
+      await loadClasses();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Gagal keluar dari kelas.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleJoinByCode(e: FormEvent) {
+    e.preventDefault();
+    if (!joinCodeInput.trim()) return;
+    setJoinError('');
+    setSaving(true);
+    try {
+      await api.joinClass(joinCodeInput.trim());
+      setJoinOpen(false);
+      setJoinCodeInput('');
+      await loadClasses();
+    } catch (err) {
+      setJoinError(err instanceof Error ? err.message : 'Gagal bergabung ke kelas.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleCopyCode(cls: ClassItem) {
+    if (!cls.syncCode) return;
+    try {
+      await navigator.clipboard.writeText(cls.syncCode);
+      setCopiedId(cls.id);
+      setTimeout(() => setCopiedId((prev) => (prev === cls.id ? null : prev)), 1800);
+    } catch {
+      // Fallback ignored if clipboard blocked
     }
   }
 
@@ -205,8 +257,20 @@ export function ClassesDashboard({ user, onLogout, onOpenClass }: ClassesDashboa
           <div className="grid grid-cols-2 sm:flex gap-2.5 shrink-0">
             <button
               type="button"
+              onClick={() => {
+                setJoinCodeInput('');
+                setJoinError('');
+                setJoinOpen(true);
+              }}
+              className="min-h-[44px] px-3.5 rounded-xl bg-white border border-slate-200/90 hover:border-teal-300 hover:bg-teal-50/40 text-slate-800 font-semibold text-sm inline-flex items-center justify-center gap-2 shadow-2xs transition"
+            >
+              <KeyRound className="w-4 h-4 text-teal-600" />
+              Gabung Kode
+            </button>
+            <button
+              type="button"
               onClick={() => setIclabsOpen(true)}
-              className="min-h-[44px] px-4 rounded-xl bg-white border border-slate-200/90 hover:border-indigo-300 hover:bg-indigo-50/40 text-slate-800 font-semibold text-sm inline-flex items-center justify-center gap-2 shadow-2xs transition"
+              className="min-h-[44px] px-3.5 rounded-xl bg-white border border-slate-200/90 hover:border-indigo-300 hover:bg-indigo-50/40 text-slate-800 font-semibold text-sm inline-flex items-center justify-center gap-2 shadow-2xs transition"
             >
               <CloudDownload className="w-4 h-4 text-indigo-600" />
               Sync ICLabs
@@ -214,7 +278,7 @@ export function ClassesDashboard({ user, onLogout, onOpenClass }: ClassesDashboa
             <button
               type="button"
               onClick={openCreate}
-              className="min-h-[44px] px-4 rounded-xl bg-slate-900 hover:bg-slate-800 active:scale-[0.99] text-white font-semibold text-sm inline-flex items-center justify-center gap-1.5 shadow-sm shadow-slate-900/15 transition"
+              className="col-span-2 sm:col-span-1 min-h-[44px] px-4 rounded-xl bg-slate-900 hover:bg-slate-800 active:scale-[0.99] text-white font-semibold text-sm inline-flex items-center justify-center gap-1.5 shadow-sm shadow-slate-900/15 transition"
             >
               <Plus className="w-4 h-4" />
               Kelas Baru
@@ -330,6 +394,18 @@ export function ClassesDashboard({ user, onLogout, onOpenClass }: ClassesDashboa
               </button>
               <button
                 type="button"
+                onClick={() => {
+                  setJoinCodeInput('');
+                  setJoinError('');
+                  setJoinOpen(true);
+                }}
+                className="w-full sm:w-auto min-h-[44px] px-4 rounded-xl bg-white border border-slate-200 hover:bg-slate-50 text-slate-800 font-semibold text-sm inline-flex items-center justify-center gap-1.5 transition"
+              >
+                <KeyRound className="w-4 h-4 text-teal-600" />
+                Gabung via Kode
+              </button>
+              <button
+                type="button"
                 onClick={openCreate}
                 className="w-full sm:w-auto min-h-[44px] px-4 rounded-xl bg-white border border-slate-200 hover:bg-slate-50 text-slate-800 font-semibold text-sm inline-flex items-center justify-center gap-1.5 transition"
               >
@@ -386,6 +462,16 @@ export function ClassesDashboard({ user, onLogout, onOpenClass }: ClassesDashboa
                           {cls.groupName}
                         </span>
                       )}
+                      {cls.syncCode && (
+                        <span className="px-2 py-0.5 rounded-md text-[11px] font-mono font-semibold bg-amber-50/80 text-amber-800 border border-amber-200/70">
+                          {copiedId === cls.id ? 'Tersalin!' : cls.syncCode}
+                        </span>
+                      )}
+                      {cls.memberCount > 1 && (
+                        <span className="px-2 py-0.5 rounded-md text-[11px] font-semibold bg-teal-50 text-teal-700 border border-teal-200/70 tabular-nums">
+                          {cls.memberCount} asisten
+                        </span>
+                      )}
                     </div>
 
                     <h2 className="font-semibold text-base text-slate-900 leading-snug group-hover:text-indigo-950 transition">
@@ -438,7 +524,20 @@ export function ClassesDashboard({ user, onLogout, onOpenClass }: ClassesDashboa
                       <MoreHorizontal className="w-4 h-4" />
                     </button>
                     {menuOpenId === cls.id && (
-                      <div className="absolute right-0 mt-1 w-44 rounded-xl bg-white shadow-xl shadow-slate-900/10 ring-1 ring-slate-200/80 py-1.5 z-30 animate-fade-in">
+                      <div className="absolute right-0 mt-1 w-48 rounded-xl bg-white shadow-xl shadow-slate-900/10 ring-1 ring-slate-200/80 py-1.5 z-30 animate-fade-in">
+                        {cls.syncCode && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setMenuOpenId(null);
+                              handleCopyCode(cls);
+                            }}
+                            className="w-full min-h-[42px] px-3.5 text-left text-sm font-medium text-slate-700 hover:bg-slate-50 flex items-center gap-2.5 transition"
+                          >
+                            <Copy className="w-4 h-4 text-slate-400" />
+                            Salin Kode
+                          </button>
+                        )}
                         <button
                           type="button"
                           onClick={() => openEdit(cls)}
@@ -447,17 +546,31 @@ export function ClassesDashboard({ user, onLogout, onOpenClass }: ClassesDashboa
                           <Edit3 className="w-4 h-4 text-slate-400" />
                           Edit Kelas
                         </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setMenuOpenId(null);
-                            setDeleteTarget(cls);
-                          }}
-                          className="w-full min-h-[42px] px-3.5 text-left text-sm font-medium text-rose-600 hover:bg-rose-50 flex items-center gap-2.5 transition"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                          Hapus Kelas
-                        </button>
+                        {cls.role === 'owner' ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setMenuOpenId(null);
+                              setDeleteTarget(cls);
+                            }}
+                            className="w-full min-h-[42px] px-3.5 text-left text-sm font-medium text-rose-600 hover:bg-rose-50 flex items-center gap-2.5 transition"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                            Hapus Kelas
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setMenuOpenId(null);
+                              setLeaveTarget(cls);
+                            }}
+                            className="w-full min-h-[42px] px-3.5 text-left text-sm font-medium text-rose-600 hover:bg-rose-50 flex items-center gap-2.5 transition"
+                          >
+                            <LogOut className="w-4 h-4" />
+                            Keluar Kelas
+                          </button>
+                        )}
                       </div>
                     )}
                   </div>
@@ -525,12 +638,64 @@ export function ClassesDashboard({ user, onLogout, onOpenClass }: ClassesDashboa
         </form>
       </Modal>
 
-      {/* Confirm Delete */}
+      {/* Modal Join by Sync Code */}
+      <Modal
+        open={joinOpen}
+        onClose={() => setJoinOpen(false)}
+        title="Gabung Kelas via Kode"
+        subtitle="Masukkan kode unik kelas dari asisten lain agar praktikan, modul, dan nilai langsung tersinkron."
+      >
+        <form onSubmit={handleJoinByCode} className="space-y-4">
+          <div>
+            <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+              Kode Unik Kelas
+            </label>
+            <input
+              type="text"
+              required
+              autoFocus
+              value={joinCodeInput}
+              onChange={(e) => setJoinCodeInput(e.target.value.toUpperCase())}
+              placeholder="Mis. LC-7K9M2X"
+              className="w-full min-h-[46px] px-3.5 rounded-xl border border-slate-200 bg-slate-50/50 focus:bg-white text-base font-mono tracking-wider uppercase text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-teal-500 focus:ring-4 focus:ring-teal-500/10 transition"
+            />
+          </div>
+          {joinError && (
+            <div className="flex items-start gap-2 text-xs text-rose-700 bg-rose-50 border border-rose-200/80 rounded-xl px-3.5 py-2.5">
+              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-rose-500" />
+              <span>{joinError}</span>
+            </div>
+          )}
+          <div className="flex flex-col-reverse sm:flex-row gap-2.5 pt-1">
+            <button
+              type="button"
+              onClick={() => setJoinOpen(false)}
+              className="min-h-[44px] px-4 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-700 font-semibold text-sm transition"
+            >
+              Batal
+            </button>
+            <button
+              type="submit"
+              disabled={saving || !joinCodeInput.trim()}
+              className="flex-1 min-h-[44px] px-4 rounded-xl bg-teal-600 hover:bg-teal-700 disabled:opacity-50 text-white font-semibold text-sm inline-flex items-center justify-center gap-2 transition"
+            >
+              {saving && <Loader2 className="w-4 h-4 animate-spin" />}
+              Gabung Kelas
+            </button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* Confirm Delete (Owner) */}
       <Modal
         open={Boolean(deleteTarget)}
         onClose={() => setDeleteTarget(null)}
         title="Hapus kelas ini?"
-        subtitle="Seluruh praktikan, modul, dan nilai di dalamnya akan ikut terhapus secara permanen."
+        subtitle={
+          deleteTarget && deleteTarget.memberCount > 1
+            ? `Kelas ini terhubung dengan ${deleteTarget.memberCount} asisten. Menghapus permanen akan menghapus seluruh praktikan, modul, dan nilai untuk semua asisten.`
+            : 'Seluruh praktikan, modul, dan nilai di dalamnya akan ikut terhapus secara permanen.'
+        }
       >
         <div className="space-y-4">
           <p className="text-sm font-semibold text-slate-900 bg-slate-50 border border-slate-200/90 rounded-xl px-4 py-3">
@@ -552,6 +717,38 @@ export function ClassesDashboard({ user, onLogout, onOpenClass }: ClassesDashboa
             >
               {saving && <Loader2 className="w-4 h-4 animate-spin" />}
               Ya, Hapus Kelas
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Confirm Leave (Member) */}
+      <Modal
+        open={Boolean(leaveTarget)}
+        onClose={() => setLeaveTarget(null)}
+        title="Keluar dari kelas ini?"
+        subtitle="Kelas hanya dihapus dari daftar Anda. Praktikan, modul, dan nilai tetap aman bagi asisten lainnya."
+      >
+        <div className="space-y-4">
+          <p className="text-sm font-semibold text-slate-900 bg-slate-50 border border-slate-200/90 rounded-xl px-4 py-3">
+            {leaveTarget?.title}
+          </p>
+          <div className="flex flex-col-reverse sm:flex-row gap-2.5">
+            <button
+              type="button"
+              onClick={() => setLeaveTarget(null)}
+              className="min-h-[44px] px-4 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-700 font-semibold text-sm transition"
+            >
+              Batal
+            </button>
+            <button
+              type="button"
+              disabled={saving}
+              onClick={handleConfirmLeave}
+              className="flex-1 min-h-[44px] px-4 rounded-xl bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white font-semibold text-sm inline-flex items-center justify-center gap-2 transition"
+            >
+              {saving && <Loader2 className="w-4 h-4 animate-spin" />}
+              Ya, Keluar Kelas
             </button>
           </div>
         </div>

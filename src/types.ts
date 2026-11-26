@@ -10,12 +10,21 @@ export interface ClassItem {
   description: string | null;
   source: 'manual' | 'iclabs' | string;
   externalClassId: string | null;
+  syncCode: string;
   courseCode: string | null;
   groupName: string | null;
+  role: 'owner' | 'member' | string;
+  memberCount: number;
   lastSyncedAt: string | null;
   createdAt: string;
   studentCount: number;
   moduleCount: number;
+}
+
+export interface JoinClassResponse {
+  joined: boolean;
+  alreadyMember: boolean;
+  class: ClassItem;
 }
 
 export interface StudentItem {
@@ -46,6 +55,7 @@ export interface BoardData {
     id: string;
     title: string;
     source: string;
+    syncCode?: string;
   };
   module: {
     id: string;
@@ -138,6 +148,7 @@ export interface IclabsPreviewClass {
   suggestedTitle: string;
   participantCountHint: number | null;
   alreadySynced: boolean;
+  sharedExisting?: boolean;
   localClassId: string | null;
   localTitle: string | null;
 }
@@ -145,6 +156,7 @@ export interface IclabsPreviewClass {
 export interface IclabsSyncResponse {
   summary: {
     classesCreated: number;
+    classesJoined?: number;
     classesUpdated: number;
     studentsInserted: number;
     studentsUpdated: number;
@@ -153,6 +165,8 @@ export interface IclabsSyncResponse {
     id: string;
     title: string;
     externalClassId: string;
+    syncCode?: string;
+    joined?: boolean;
     participantCount: number;
     inserted: number;
     updated: number;

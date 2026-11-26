@@ -6,13 +6,22 @@ import { and, asc, desc, eq, gt, inArray, sql } from 'drizzle-orm';
 import {
   users,
   classes,
+  classMembers,
   students,
   modules,
   taskCompletions,
 } from './db/schema';
 import type { AppDb } from './db/client';
 import { createWebDb } from './db/web';
-import { hashPassword, verifyPassword, signJwt, verifyJwt, newId } from './lib/crypto';
+import {
+  hashPassword,
+  verifyPassword,
+  signJwt,
+  verifyJwt,
+  newId,
+  generateSyncCode,
+  normalizeSyncCode,
+} from './lib/crypto';
 import { calcAverage, calcModuleScore, pointsPerTask, roundScore } from './lib/scoring';
 import {
   DEFAULT_ICLABS_BASE_URL,
@@ -81,6 +90,10 @@ const classCreateSchema = z.object({
 const classUpdateSchema = z.object({
   title: z.string().trim().min(1, 'Judul kelas tidak boleh kosong').max(150).optional(),
   description: z.string().trim().max(500).optional().nullable(),
+});
+
+const joinClassSchema = z.object({
+  code: z.string().trim().min(4, 'Kode kelas tidak valid').max(32),
 });
 
 const studentSchema = z.object({
@@ -158,6 +171,56 @@ const iclabsSyncSchema = z
 
 const INSERT_CHUNK_SIZE = 80;
 const UPDATE_BATCH_SIZE = 50;
+
+async function generateUniqueSyncCode(db: AppDb): Promise<string> {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const code = generateSyncCode();
+    const [existing] = await db
+      .select({ id: classes.id })
+      .from(classes)
+      .where(eq(classes.syncCode, code))
+      .limit(1);
+    if (!existing) return code;
+  }
+  throw new Error('Gagal menghasilkan kode kelas unik.');
+}
+
+async function getClassWithMembership(db: AppDb, classId: string, userId: string) {
+  const [row] = await db
+    .select({ cls: classes, role: classMembers.role })
+    .from(classMembers)
+    .innerJoin(classes, eq(classMembers.classId, classes.id))
+    .where(and(eq(classMembers.classId, classId), eq(classMembers.userId, userId)))
+    .limit(1);
+  return row ?? null;
+}
+
+async function getStudentWithMembership(db: AppDb, studentId: string, userId: string) {
+  const [row] = await db
+    .select({ student: students, role: classMembers.role })
+    .from(students)
+    .innerJoin(
+      classMembers,
+      and(eq(classMembers.classId, students.classId), eq(classMembers.userId, userId))
+    )
+    .where(eq(students.id, studentId))
+    .limit(1);
+  return row ?? null;
+}
+
+async function getModuleWithMembership(db: AppDb, moduleId: string, userId: string) {
+  const [row] = await db
+    .select({ mod: modules, cls: classes, role: classMembers.role })
+    .from(modules)
+    .innerJoin(classes, eq(modules.classId, classes.id))
+    .innerJoin(
+      classMembers,
+      and(eq(classMembers.classId, classes.id), eq(classMembers.userId, userId))
+    )
+    .where(eq(modules.id, moduleId))
+    .limit(1);
+  return row ?? null;
+}
 
 async function upsertStudentsBatch(
   db: AppDb,
@@ -376,48 +439,66 @@ export function createApp(options: CreateAppOptions = {}) {
     const db = c.get('db');
     const user = c.get('user');
 
-    const classRows = await db
-      .select()
-      .from(classes)
-      .where(eq(classes.userId, user.id))
-      .orderBy(desc(classes.createdAt));
+    const memberRows = await db
+      .select({
+        cls: classes,
+        role: classMembers.role,
+        joinedAt: classMembers.joinedAt,
+      })
+      .from(classMembers)
+      .innerJoin(classes, eq(classMembers.classId, classes.id))
+      .where(eq(classMembers.userId, user.id))
+      .orderBy(desc(classMembers.joinedAt), desc(classes.createdAt));
 
-    if (classRows.length === 0) {
+    if (memberRows.length === 0) {
       return c.json({ classes: [] });
     }
 
-    const classIds = classRows.map((cl) => cl.id);
+    const classIds = memberRows.map((row) => row.cls.id);
 
-    const studentCounts = await db
-      .select({
-        classId: students.classId,
-        count: sql<number>`count(*)`,
-      })
-      .from(students)
-      .where(inArray(students.classId, classIds))
-      .groupBy(students.classId);
-
-    const moduleCounts = await db
-      .select({
-        classId: modules.classId,
-        count: sql<number>`count(*)`,
-      })
-      .from(modules)
-      .where(inArray(modules.classId, classIds))
-      .groupBy(modules.classId);
+    const [studentCounts, moduleCounts, memberCounts] = await Promise.all([
+      db
+        .select({
+          classId: students.classId,
+          count: sql<number>`count(*)`,
+        })
+        .from(students)
+        .where(inArray(students.classId, classIds))
+        .groupBy(students.classId),
+      db
+        .select({
+          classId: modules.classId,
+          count: sql<number>`count(*)`,
+        })
+        .from(modules)
+        .where(inArray(modules.classId, classIds))
+        .groupBy(modules.classId),
+      db
+        .select({
+          classId: classMembers.classId,
+          count: sql<number>`count(*)`,
+        })
+        .from(classMembers)
+        .where(inArray(classMembers.classId, classIds))
+        .groupBy(classMembers.classId),
+    ]);
 
     const studentMap = new Map(studentCounts.map((r) => [r.classId, Number(r.count)]));
     const moduleMap = new Map(moduleCounts.map((r) => [r.classId, Number(r.count)]));
+    const memberMap = new Map(memberCounts.map((r) => [r.classId, Number(r.count)]));
 
     return c.json({
-      classes: classRows.map((cl) => ({
+      classes: memberRows.map(({ cls: cl, role }) => ({
         id: cl.id,
         title: cl.title,
         description: cl.description,
         source: cl.source,
         externalClassId: cl.externalClassId,
+        syncCode: cl.syncCode || '',
         courseCode: cl.courseCode,
         groupName: cl.groupName,
+        role,
+        memberCount: memberMap.get(cl.id) ?? 1,
         lastSyncedAt: cl.lastSyncedAt ? cl.lastSyncedAt.toISOString() : null,
         createdAt: cl.createdAt.toISOString(),
         studentCount: studentMap.get(cl.id) ?? 0,
@@ -432,6 +513,7 @@ export function createApp(options: CreateAppOptions = {}) {
     const { title, description } = c.req.valid('json');
 
     const id = newId();
+    const syncCode = await generateUniqueSyncCode(db);
     const createdAt = new Date();
     await db.insert(classes).values({
       id,
@@ -439,7 +521,15 @@ export function createApp(options: CreateAppOptions = {}) {
       title,
       description: description || null,
       source: 'manual',
+      syncCode,
       createdAt,
+    });
+    await db.insert(classMembers).values({
+      id: newId(),
+      classId: id,
+      userId: user.id,
+      role: 'owner',
+      joinedAt: createdAt,
     });
 
     return c.json(
@@ -450,8 +540,11 @@ export function createApp(options: CreateAppOptions = {}) {
           description: description || null,
           source: 'manual',
           externalClassId: null,
+          syncCode,
           courseCode: null,
           groupName: null,
+          role: 'owner',
+          memberCount: 1,
           lastSyncedAt: null,
           createdAt: createdAt.toISOString(),
           studentCount: 0,
@@ -462,29 +555,100 @@ export function createApp(options: CreateAppOptions = {}) {
     );
   });
 
+  app.post('/api/classes/join', zValidator('json', joinClassSchema), async (c) => {
+    const db = c.get('db');
+    const user = c.get('user');
+    const normalized = normalizeSyncCode(c.req.valid('json').code);
+
+    const [cls] = await db
+      .select()
+      .from(classes)
+      .where(eq(classes.syncCode, normalized))
+      .limit(1);
+
+    if (!cls) {
+      return c.json({ error: 'Kode kelas tidak ditemukan. Periksa kembali kode unik kelas.' }, 404);
+    }
+
+    const [existingMember] = await db
+      .select({ id: classMembers.id, role: classMembers.role })
+      .from(classMembers)
+      .where(and(eq(classMembers.classId, cls.id), eq(classMembers.userId, user.id)))
+      .limit(1);
+
+    const alreadyMember = Boolean(existingMember);
+    const role = existingMember?.role ?? 'member';
+
+    if (!alreadyMember) {
+      await db
+        .insert(classMembers)
+        .values({
+          id: newId(),
+          classId: cls.id,
+          userId: user.id,
+          role: 'member',
+          joinedAt: new Date(),
+        })
+        .onConflictDoNothing({
+          target: [classMembers.classId, classMembers.userId],
+        });
+    }
+
+    const [[stuCnt], [modCnt], [memCnt]] = await Promise.all([
+      db.select({ count: sql<number>`count(*)` }).from(students).where(eq(students.classId, cls.id)),
+      db.select({ count: sql<number>`count(*)` }).from(modules).where(eq(modules.classId, cls.id)),
+      db
+        .select({ count: sql<number>`count(*)` })
+        .from(classMembers)
+        .where(eq(classMembers.classId, cls.id)),
+    ]);
+
+    return c.json({
+      joined: !alreadyMember,
+      alreadyMember,
+      class: {
+        id: cls.id,
+        title: cls.title,
+        description: cls.description,
+        source: cls.source,
+        externalClassId: cls.externalClassId,
+        syncCode: cls.syncCode || '',
+        courseCode: cls.courseCode,
+        groupName: cls.groupName,
+        role,
+        memberCount: Number(memCnt?.count ?? 1),
+        lastSyncedAt: cls.lastSyncedAt ? cls.lastSyncedAt.toISOString() : null,
+        createdAt: cls.createdAt.toISOString(),
+        studentCount: Number(stuCnt?.count ?? 0),
+        moduleCount: Number(modCnt?.count ?? 0),
+      },
+    });
+  });
+
   app.get('/api/classes/:id', async (c) => {
     const db = c.get('db');
     const user = c.get('user');
     const classId = c.req.param('id');
 
-    const [cls] = await db
-      .select()
-      .from(classes)
-      .where(and(eq(classes.id, classId), eq(classes.userId, user.id)))
-      .limit(1);
+    const access = await getClassWithMembership(db, classId, user.id);
+    if (!access) return c.json({ error: 'Kelas tidak ditemukan.' }, 404);
+    const { cls, role } = access;
 
-    if (!cls) return c.json({ error: 'Kelas tidak ditemukan.' }, 404);
-
-    const [{ count: studentCount }] = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(students)
-      .where(eq(students.classId, classId));
-
-    const modRows = await db
-      .select()
-      .from(modules)
-      .where(eq(modules.classId, classId))
-      .orderBy(asc(modules.orderIndex), asc(modules.createdAt));
+    const [[{ count: studentCount }], [{ count: memberCount }], modRows] = await Promise.all([
+      db
+        .select({ count: sql<number>`count(*)` })
+        .from(students)
+        .where(eq(students.classId, classId)),
+      db
+        .select({ count: sql<number>`count(*)` })
+        .from(classMembers)
+        .where(eq(classMembers.classId, classId)),
+      db
+        .select()
+        .from(modules)
+        .where(eq(modules.classId, classId))
+        .orderBy(asc(modules.orderIndex), asc(modules.createdAt)),
+    ]);
 
     return c.json({
       class: {
@@ -493,8 +657,11 @@ export function createApp(options: CreateAppOptions = {}) {
         description: cls.description,
         source: cls.source,
         externalClassId: cls.externalClassId,
+        syncCode: cls.syncCode || '',
         courseCode: cls.courseCode,
         groupName: cls.groupName,
+        role,
+        memberCount: Number(memberCount),
         lastSyncedAt: cls.lastSyncedAt ? cls.lastSyncedAt.toISOString() : null,
         createdAt: cls.createdAt.toISOString(),
         studentCount: Number(studentCount),
@@ -519,13 +686,9 @@ export function createApp(options: CreateAppOptions = {}) {
     const classId = c.req.param('id');
     const data = c.req.valid('json');
 
-    const [existing] = await db
-      .select()
-      .from(classes)
-      .where(and(eq(classes.id, classId), eq(classes.userId, user.id)))
-      .limit(1);
-
-    if (!existing) return c.json({ error: 'Kelas tidak ditemukan.' }, 404);
+    const access = await getClassWithMembership(db, classId, user.id);
+    if (!access) return c.json({ error: 'Kelas tidak ditemukan.' }, 404);
+    const { cls: existing, role } = access;
 
     const nextTitle = data.title !== undefined ? data.title : existing.title;
     const nextDesc = data.description !== undefined ? data.description : existing.description;
@@ -535,15 +698,48 @@ export function createApp(options: CreateAppOptions = {}) {
       .set({ title: nextTitle, description: nextDesc })
       .where(eq(classes.id, classId));
 
+    const [{ count: memberCount }] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(classMembers)
+      .where(eq(classMembers.classId, classId));
+
     return c.json({
       class: {
         ...existing,
         title: nextTitle,
         description: nextDesc,
+        syncCode: existing.syncCode || '',
+        role,
+        memberCount: Number(memberCount),
         lastSyncedAt: existing.lastSyncedAt ? existing.lastSyncedAt.toISOString() : null,
         createdAt: existing.createdAt.toISOString(),
       },
     });
+  });
+
+  app.post('/api/classes/:id/leave', async (c) => {
+    const db = c.get('db');
+    const user = c.get('user');
+    const classId = c.req.param('id');
+
+    const access = await getClassWithMembership(db, classId, user.id);
+    if (!access) return c.json({ error: 'Kelas tidak ditemukan.' }, 404);
+
+    if (access.role === 'owner') {
+      return c.json(
+        {
+          error:
+            'Pembuat kelas tidak dapat keluar. Gunakan Hapus Kelas jika ingin menghapus kelas secara permanen.',
+        },
+        400
+      );
+    }
+
+    await db
+      .delete(classMembers)
+      .where(and(eq(classMembers.classId, classId), eq(classMembers.userId, user.id)));
+
+    return c.json({ ok: true });
   });
 
   app.delete('/api/classes/:id', async (c) => {
@@ -551,13 +747,18 @@ export function createApp(options: CreateAppOptions = {}) {
     const user = c.get('user');
     const classId = c.req.param('id');
 
-    const [existing] = await db
-      .select({ id: classes.id })
-      .from(classes)
-      .where(and(eq(classes.id, classId), eq(classes.userId, user.id)))
-      .limit(1);
+    const access = await getClassWithMembership(db, classId, user.id);
+    if (!access) return c.json({ error: 'Kelas tidak ditemukan.' }, 404);
 
-    if (!existing) return c.json({ error: 'Kelas tidak ditemukan.' }, 404);
+    if (access.role !== 'owner') {
+      return c.json(
+        {
+          error:
+            'Hanya pembuat kelas yang dapat menghapus kelas secara permanen. Gunakan Keluar Kelas.',
+        },
+        403
+      );
+    }
 
     await db.delete(classes).where(eq(classes.id, classId));
     return c.json({ ok: true });
@@ -574,31 +775,55 @@ export function createApp(options: CreateAppOptions = {}) {
     try {
       const token = await iclabsLogin(baseUrl, identitas, password, 'labcheck-web', fetchFn);
       const remoteClasses = await iclabsGetClasses(baseUrl, token, periode, fetchFn);
+      const remoteExtIds = remoteClasses.map((rc) => rc.externalClassId);
 
-      const localSynced = await db
+      const userSynced = await db
         .select({
           id: classes.id,
           externalClassId: classes.externalClassId,
           title: classes.title,
         })
-        .from(classes)
-        .where(and(eq(classes.userId, user.id), eq(classes.source, 'iclabs')));
+        .from(classMembers)
+        .innerJoin(classes, eq(classMembers.classId, classes.id))
+        .where(and(eq(classMembers.userId, user.id), eq(classes.source, 'iclabs')));
 
-      const localMap = new Map(
-        localSynced
+      const userMap = new Map(
+        userSynced
           .filter((r) => Boolean(r.externalClassId))
           .map((r) => [r.externalClassId as string, r])
       );
 
+      const globalExisting =
+        remoteExtIds.length > 0
+          ? await db
+              .select({
+                id: classes.id,
+                externalClassId: classes.externalClassId,
+                title: classes.title,
+              })
+              .from(classes)
+              .where(inArray(classes.externalClassId, remoteExtIds))
+              .orderBy(asc(classes.createdAt))
+          : [];
+
+      const globalMap = new Map<string, { id: string; externalClassId: string | null; title: string }>();
+      for (const row of globalExisting) {
+        if (row.externalClassId && !globalMap.has(row.externalClassId)) {
+          globalMap.set(row.externalClassId, row);
+        }
+      }
+
       return c.json({
         iclabsToken: token,
         classes: remoteClasses.map((rc) => {
-          const local = localMap.get(rc.externalClassId);
+          const userLocal = userMap.get(rc.externalClassId);
+          const globalLocal = globalMap.get(rc.externalClassId);
           return {
             ...rc,
-            alreadySynced: Boolean(local),
-            localClassId: local?.id ?? null,
-            localTitle: local?.title ?? null,
+            alreadySynced: Boolean(userLocal),
+            sharedExisting: Boolean(!userLocal && globalLocal),
+            localClassId: userLocal?.id ?? globalLocal?.id ?? null,
+            localTitle: userLocal?.title ?? globalLocal?.title ?? null,
           };
         }),
       });
@@ -626,6 +851,7 @@ export function createApp(options: CreateAppOptions = {}) {
         (await iclabsLogin(baseUrl, body.identitas!, body.password!, 'labcheck-web', fetchFn));
 
       let classesCreated = 0;
+      let classesJoined = 0;
       let classesUpdated = 0;
       let studentsInserted = 0;
       let studentsUpdated = 0;
@@ -633,22 +859,39 @@ export function createApp(options: CreateAppOptions = {}) {
         id: string;
         title: string;
         externalClassId: string;
+        syncCode: string;
+        joined: boolean;
         participantCount: number;
         inserted: number;
         updated: number;
       }> = [];
 
       const now = new Date();
+      const incomingExtIds = body.classes.map((clsInput) => clsInput.externalClassId);
 
+      // Lookup global classes by ICLabs id_kelas_kuliah so assistants on the same class share 1 record
       const existingClassesRows = await db
         .select()
         .from(classes)
-        .where(eq(classes.userId, user.id));
-      const existingClassByExtId = new Map(
-        existingClassesRows
-          .filter((r) => Boolean(r.externalClassId))
-          .map((r) => [r.externalClassId as string, r])
-      );
+        .where(inArray(classes.externalClassId, incomingExtIds))
+        .orderBy(asc(classes.createdAt));
+
+      const existingClassByExtId = new Map<string, (typeof existingClassesRows)[number]>();
+      for (const r of existingClassesRows) {
+        if (r.externalClassId && !existingClassByExtId.has(r.externalClassId)) {
+          existingClassByExtId.set(r.externalClassId, r);
+        }
+      }
+
+      const existingIds = Array.from(existingClassByExtId.values()).map((r) => r.id);
+      const userMemberRows =
+        existingIds.length > 0
+          ? await db
+              .select({ classId: classMembers.classId })
+              .from(classMembers)
+              .where(and(eq(classMembers.userId, user.id), inArray(classMembers.classId, existingIds)))
+          : [];
+      const userMemberClassIds = new Set(userMemberRows.map((r) => r.classId));
 
       for (const clsInput of body.classes) {
         const participants = await iclabsGetParticipants(
@@ -662,25 +905,49 @@ export function createApp(options: CreateAppOptions = {}) {
 
         let localClassId: string;
         let finalTitle: string;
+        let finalSyncCode: string;
         let isNewClass = false;
+        let joinedShared = false;
 
         if (existingClass) {
           localClassId = existingClass.id;
           finalTitle = existingClass.title;
+          finalSyncCode = existingClass.syncCode || (await generateUniqueSyncCode(db));
           await db
             .update(classes)
             .set({
               courseCode: clsInput.courseCode || existingClass.courseCode,
               groupName: clsInput.groupName || existingClass.groupName,
+              syncCode: finalSyncCode,
               source: 'iclabs',
               lastSyncedAt: now,
             })
             .where(eq(classes.id, existingClass.id));
-          classesUpdated += 1;
+
+          if (!userMemberClassIds.has(existingClass.id)) {
+            await db
+              .insert(classMembers)
+              .values({
+                id: newId(),
+                classId: existingClass.id,
+                userId: user.id,
+                role: 'member',
+                joinedAt: now,
+              })
+              .onConflictDoNothing({
+                target: [classMembers.classId, classMembers.userId],
+              });
+            userMemberClassIds.add(existingClass.id);
+            joinedShared = true;
+            classesJoined += 1;
+          } else {
+            classesUpdated += 1;
+          }
         } else {
           isNewClass = true;
           localClassId = newId();
           finalTitle = clsInput.title;
+          finalSyncCode = await generateUniqueSyncCode(db);
           const newClassRow = {
             id: localClassId,
             userId: user.id,
@@ -690,13 +957,22 @@ export function createApp(options: CreateAppOptions = {}) {
               : 'Sinkronisasi langsung dari ICLabs',
             source: 'iclabs',
             externalClassId: clsInput.externalClassId,
+            syncCode: finalSyncCode,
             courseCode: clsInput.courseCode || null,
             groupName: clsInput.groupName || null,
             lastSyncedAt: now,
             createdAt: now,
           };
           await db.insert(classes).values(newClassRow);
+          await db.insert(classMembers).values({
+            id: newId(),
+            classId: localClassId,
+            userId: user.id,
+            role: 'owner',
+            joinedAt: now,
+          });
           existingClassByExtId.set(clsInput.externalClassId, newClassRow);
+          userMemberClassIds.add(localClassId);
           classesCreated += 1;
         }
 
@@ -713,6 +989,8 @@ export function createApp(options: CreateAppOptions = {}) {
           id: localClassId,
           title: finalTitle,
           externalClassId: clsInput.externalClassId,
+          syncCode: finalSyncCode,
+          joined: joinedShared,
           participantCount: studentRes.total,
           inserted: studentRes.inserted,
           updated: studentRes.updated,
@@ -722,6 +1000,7 @@ export function createApp(options: CreateAppOptions = {}) {
       return c.json({
         summary: {
           classesCreated,
+          classesJoined,
           classesUpdated,
           studentsInserted,
           studentsUpdated,
@@ -745,13 +1024,8 @@ export function createApp(options: CreateAppOptions = {}) {
     const user = c.get('user');
     const classId = c.req.param('id');
 
-    const [cls] = await db
-      .select({ id: classes.id })
-      .from(classes)
-      .where(and(eq(classes.id, classId), eq(classes.userId, user.id)))
-      .limit(1);
-
-    if (!cls) return c.json({ error: 'Kelas tidak ditemukan.' }, 404);
+    const access = await getClassWithMembership(db, classId, user.id);
+    if (!access) return c.json({ error: 'Kelas tidak ditemukan.' }, 404);
 
     const rows = await db
       .select()
@@ -777,12 +1051,8 @@ export function createApp(options: CreateAppOptions = {}) {
     const classId = c.req.param('id');
     const { nim, name, status } = c.req.valid('json');
 
-    const [cls] = await db
-      .select({ id: classes.id })
-      .from(classes)
-      .where(and(eq(classes.id, classId), eq(classes.userId, user.id)))
-      .limit(1);
-    if (!cls) return c.json({ error: 'Kelas tidak ditemukan.' }, 404);
+    const access = await getClassWithMembership(db, classId, user.id);
+    if (!access) return c.json({ error: 'Kelas tidak ditemukan.' }, 404);
 
     const [dup] = await db
       .select({ id: students.id })
@@ -817,12 +1087,8 @@ export function createApp(options: CreateAppOptions = {}) {
     const classId = c.req.param('id');
     const { students: incoming } = c.req.valid('json');
 
-    const [cls] = await db
-      .select({ id: classes.id })
-      .from(classes)
-      .where(and(eq(classes.id, classId), eq(classes.userId, user.id)))
-      .limit(1);
-    if (!cls) return c.json({ error: 'Kelas tidak ditemukan.' }, 404);
+    const access = await getClassWithMembership(db, classId, user.id);
+    if (!access) return c.json({ error: 'Kelas tidak ditemukan.' }, 404);
 
     const result = await upsertStudentsBatch(db, classId, incoming);
     return c.json(result);
@@ -834,17 +1100,8 @@ export function createApp(options: CreateAppOptions = {}) {
     const studentId = c.req.param('id');
     const data = c.req.valid('json');
 
-    const [row] = await db
-      .select({
-        student: students,
-        ownerId: classes.userId,
-      })
-      .from(students)
-      .innerJoin(classes, eq(students.classId, classes.id))
-      .where(eq(students.id, studentId))
-      .limit(1);
-
-    if (!row || row.ownerId !== user.id) {
+    const row = await getStudentWithMembership(db, studentId, user.id);
+    if (!row) {
       return c.json({ error: 'Praktikan tidak ditemukan.' }, 404);
     }
 
@@ -883,14 +1140,8 @@ export function createApp(options: CreateAppOptions = {}) {
     const user = c.get('user');
     const studentId = c.req.param('id');
 
-    const [row] = await db
-      .select({ id: students.id, ownerId: classes.userId })
-      .from(students)
-      .innerJoin(classes, eq(students.classId, classes.id))
-      .where(eq(students.id, studentId))
-      .limit(1);
-
-    if (!row || row.ownerId !== user.id) {
+    const row = await getStudentWithMembership(db, studentId, user.id);
+    if (!row) {
       return c.json({ error: 'Praktikan tidak ditemukan.' }, 404);
     }
 
@@ -904,12 +1155,8 @@ export function createApp(options: CreateAppOptions = {}) {
     const user = c.get('user');
     const classId = c.req.param('id');
 
-    const [cls] = await db
-      .select({ id: classes.id })
-      .from(classes)
-      .where(and(eq(classes.id, classId), eq(classes.userId, user.id)))
-      .limit(1);
-    if (!cls) return c.json({ error: 'Kelas tidak ditemukan.' }, 404);
+    const access = await getClassWithMembership(db, classId, user.id);
+    if (!access) return c.json({ error: 'Kelas tidak ditemukan.' }, 404);
 
     const modRows = await db
       .select()
@@ -980,12 +1227,8 @@ export function createApp(options: CreateAppOptions = {}) {
     const classId = c.req.param('id');
     const { title, taskCount, moduleDate } = c.req.valid('json');
 
-    const [cls] = await db
-      .select({ id: classes.id })
-      .from(classes)
-      .where(and(eq(classes.id, classId), eq(classes.userId, user.id)))
-      .limit(1);
-    if (!cls) return c.json({ error: 'Kelas tidak ditemukan.' }, 404);
+    const access = await getClassWithMembership(db, classId, user.id);
+    if (!access) return c.json({ error: 'Kelas tidak ditemukan.' }, 404);
 
     const [{ maxOrder }] = await db
       .select({ maxOrder: sql<number>`coalesce(max(${modules.orderIndex}), 0)` })
@@ -1030,14 +1273,8 @@ export function createApp(options: CreateAppOptions = {}) {
     const moduleId = c.req.param('id');
     const data = c.req.valid('json');
 
-    const [row] = await db
-      .select({ mod: modules, ownerId: classes.userId })
-      .from(modules)
-      .innerJoin(classes, eq(modules.classId, classes.id))
-      .where(eq(modules.id, moduleId))
-      .limit(1);
-
-    if (!row || row.ownerId !== user.id) {
+    const row = await getModuleWithMembership(db, moduleId, user.id);
+    if (!row) {
       return c.json({ error: 'Modul tidak ditemukan.' }, 404);
     }
 
@@ -1082,14 +1319,8 @@ export function createApp(options: CreateAppOptions = {}) {
     const user = c.get('user');
     const moduleId = c.req.param('id');
 
-    const [row] = await db
-      .select({ id: modules.id, ownerId: classes.userId })
-      .from(modules)
-      .innerJoin(classes, eq(modules.classId, classes.id))
-      .where(eq(modules.id, moduleId))
-      .limit(1);
-
-    if (!row || row.ownerId !== user.id) {
+    const row = await getModuleWithMembership(db, moduleId, user.id);
+    if (!row) {
       return c.json({ error: 'Modul tidak ditemukan.' }, 404);
     }
 
@@ -1103,14 +1334,8 @@ export function createApp(options: CreateAppOptions = {}) {
     const user = c.get('user');
     const moduleId = c.req.param('id');
 
-    const [row] = await db
-      .select({ mod: modules, cls: classes })
-      .from(modules)
-      .innerJoin(classes, eq(modules.classId, classes.id))
-      .where(eq(modules.id, moduleId))
-      .limit(1);
-
-    if (!row || row.cls.userId !== user.id) {
+    const row = await getModuleWithMembership(db, moduleId, user.id);
+    if (!row) {
       return c.json({ error: 'Modul tidak ditemukan.' }, 404);
     }
 
@@ -1145,6 +1370,7 @@ export function createApp(options: CreateAppOptions = {}) {
         id: row.cls.id,
         title: row.cls.title,
         source: row.cls.source,
+        syncCode: row.cls.syncCode || '',
       },
       module: {
         id: row.mod.id,
@@ -1171,14 +1397,8 @@ export function createApp(options: CreateAppOptions = {}) {
     const moduleId = c.req.param('id');
     const { studentId, taskNumber, completed } = c.req.valid('json');
 
-    const [row] = await db
-      .select({ mod: modules, ownerId: classes.userId })
-      .from(modules)
-      .innerJoin(classes, eq(modules.classId, classes.id))
-      .where(eq(modules.id, moduleId))
-      .limit(1);
-
-    if (!row || row.ownerId !== user.id) {
+    const row = await getModuleWithMembership(db, moduleId, user.id);
+    if (!row) {
       return c.json({ error: 'Modul tidak ditemukan.' }, 404);
     }
 
@@ -1233,14 +1453,8 @@ export function createApp(options: CreateAppOptions = {}) {
     const moduleId = c.req.param('id');
     const { studentId, completed } = c.req.valid('json');
 
-    const [row] = await db
-      .select({ mod: modules, ownerId: classes.userId })
-      .from(modules)
-      .innerJoin(classes, eq(modules.classId, classes.id))
-      .where(eq(modules.id, moduleId))
-      .limit(1);
-
-    if (!row || row.ownerId !== user.id) {
+    const row = await getModuleWithMembership(db, moduleId, user.id);
+    if (!row) {
       return c.json({ error: 'Modul tidak ditemukan.' }, 404);
     }
 
@@ -1289,14 +1503,8 @@ export function createApp(options: CreateAppOptions = {}) {
     const user = c.get('user');
     const moduleId = c.req.param('id');
 
-    const [row] = await db
-      .select({ mod: modules, cls: classes })
-      .from(modules)
-      .innerJoin(classes, eq(modules.classId, classes.id))
-      .where(eq(modules.id, moduleId))
-      .limit(1);
-
-    if (!row || row.cls.userId !== user.id) {
+    const row = await getModuleWithMembership(db, moduleId, user.id);
+    if (!row) {
       return c.json({ error: 'Modul tidak ditemukan.' }, 404);
     }
 
@@ -1388,13 +1596,9 @@ export function createApp(options: CreateAppOptions = {}) {
     const user = c.get('user');
     const classId = c.req.param('id');
 
-    const [cls] = await db
-      .select()
-      .from(classes)
-      .where(and(eq(classes.id, classId), eq(classes.userId, user.id)))
-      .limit(1);
-
-    if (!cls) return c.json({ error: 'Kelas tidak ditemukan.' }, 404);
+    const access = await getClassWithMembership(db, classId, user.id);
+    if (!access) return c.json({ error: 'Kelas tidak ditemukan.' }, 404);
+    const { cls } = access;
 
     const studentRows = await db
       .select()

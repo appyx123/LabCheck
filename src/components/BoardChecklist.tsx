@@ -55,21 +55,27 @@ export function BoardChecklist({
   const [pendingCount, setPendingCount] = useState(0);
   const [syncError, setSyncError] = useState('');
   const cellSeqRef = useRef<Record<string, number>>({});
+  const pendingCountRef = useRef(0);
+  const mutationEpochRef = useRef(0);
 
   const [wakeLockActive, setWakeLockActive] = useState(false);
   const wakeLockRef = useRef<{ release: () => Promise<void> } | null>(null);
   const wakeLockSupported = typeof navigator !== 'undefined' && 'wakeLock' in navigator;
 
+  function applyBoardData(data: BoardData) {
+    setBoard(data);
+    const mapped: Record<string, Set<number>> = {};
+    for (const st of data.students) {
+      mapped[st.id] = new Set(data.completions[st.id] || []);
+    }
+    setCompletions(mapped);
+  }
+
   async function loadBoard() {
     setLoadError('');
     try {
       const data = await api.getBoard(moduleId);
-      setBoard(data);
-      const mapped: Record<string, Set<number>> = {};
-      for (const st of data.students) {
-        mapped[st.id] = new Set(data.completions[st.id] || []);
-      }
-      setCompletions(mapped);
+      applyBoardData(data);
     } catch (err) {
       setLoadError(err instanceof Error ? err.message : 'Gagal memuat board.');
     } finally {
@@ -78,8 +84,52 @@ export function BoardChecklist({
   }
 
   useEffect(() => {
+    pendingCountRef.current = pendingCount;
+  }, [pendingCount]);
+
+  useEffect(() => {
     setLoading(true);
     loadBoard();
+  }, [moduleId]);
+
+  // Lightweight background polling (5s) so co-assistants on the same class see live checklist updates
+  useEffect(() => {
+    let active = true;
+    let polling = false;
+
+    async function pollBoard() {
+      if (!active || polling || pendingCountRef.current > 0) return;
+      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+      polling = true;
+      const epochBefore = mutationEpochRef.current;
+      try {
+        const data = await api.getBoard(moduleId);
+        // Discard stale poll if local user tapped while poll was in-flight
+        if (active && pendingCountRef.current === 0 && mutationEpochRef.current === epochBefore) {
+          applyBoardData(data);
+        }
+      } catch {
+        // Silent retry on next tick; do not disrupt active checklist session
+      } finally {
+        polling = false;
+      }
+    }
+
+    const timer = window.setInterval(pollBoard, 5000);
+    const onFocusOrVisible = () => {
+      if (document.visibilityState === 'visible') {
+        void pollBoard();
+      }
+    };
+    window.addEventListener('focus', onFocusOrVisible);
+    document.addEventListener('visibilitychange', onFocusOrVisible);
+
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+      window.removeEventListener('focus', onFocusOrVisible);
+      document.removeEventListener('visibilitychange', onFocusOrVisible);
+    };
   }, [moduleId]);
 
   useEffect(() => {
@@ -145,6 +195,8 @@ export function BoardChecklist({
     const cellKey = `${studentId}:${taskNumber}`;
     const seq = (cellSeqRef.current[cellKey] || 0) + 1;
     cellSeqRef.current[cellKey] = seq;
+    mutationEpochRef.current += 1;
+    pendingCountRef.current += 1;
 
     vibrateLight();
     setSyncError('');
@@ -169,6 +221,7 @@ export function BoardChecklist({
         setSyncError(err instanceof Error ? err.message : 'Gagal menyimpan perubahan.');
       }
     } finally {
+      pendingCountRef.current = Math.max(0, pendingCountRef.current - 1);
       setPendingCount((c) => Math.max(0, c - 1));
     }
   }
@@ -177,6 +230,8 @@ export function BoardChecklist({
     if (!board) return;
     const prevSet = new Set(completions[studentId] || []);
     const allTasks = Array.from({ length: board.module.taskCount }, (_, i) => i + 1);
+    mutationEpochRef.current += 1;
+    pendingCountRef.current += 1;
 
     vibrateLight();
     setSyncError('');
@@ -192,6 +247,7 @@ export function BoardChecklist({
       setCompletions((prev) => ({ ...prev, [studentId]: prevSet }));
       setSyncError(err instanceof Error ? err.message : 'Gagal menyimpan perubahan.');
     } finally {
+      pendingCountRef.current = Math.max(0, pendingCountRef.current - 1);
       setPendingCount((c) => Math.max(0, c - 1));
     }
   }

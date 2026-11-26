@@ -12,6 +12,7 @@
     "preview": "vite preview",
     "db:push": "drizzle-kit push",
     "db:generate": "drizzle-kit generate",
+    "db:migrate-shared": "tsx server/db/migrate-shared.ts",
     "test": "node --test rekap-peserta.test.mjs && vitest run",
     "rekap:cli": "node rekap-peserta.mjs"
   },

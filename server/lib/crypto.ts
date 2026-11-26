@@ -147,3 +147,20 @@ export async function verifyJwt(token: string, secret: string): Promise<JwtPaylo
 export function newId(): string {
   return crypto.randomUUID();
 }
+
+const SYNC_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // 32 chars (no 0/O/1/I)
+
+export function generateSyncCode(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(6));
+  let body = '';
+  for (let i = 0; i < bytes.length; i += 1) {
+    body += SYNC_CODE_ALPHABET[bytes[i] & 31];
+  }
+  return `LC-${body}`;
+}
+
+export function normalizeSyncCode(raw: string): string {
+  const clean = raw.trim().toUpperCase().replace(/\s+/g, '');
+  if (/^[A-Z0-9]{6}$/.test(clean)) return `LC-${clean}`;
+  return clean;
+}
